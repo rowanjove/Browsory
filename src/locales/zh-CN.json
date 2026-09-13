@@ -1,0 +1,87 @@
+{
+  "nav": {
+    "history": "历史",
+    "analytics": "分析",
+    "sources": "数据源",
+    "ai": "AI 助手",
+    "settings": "设置"
+  },
+  "history": {
+    "searchPlaceholder": "搜索标题或 URL...",
+    "allBrowsers": "全部浏览器",
+    "timeRange": {
+      "all": "全部时间",
+      "today": "今天",
+      "yesterday": "昨天",
+      "last7Days": "最近 7 天",
+      "last30Days": "最近 30 天",
+      "thisYear": "今年"
+    },
+    "columns": {
+      "time": "时间",
+      "title": "标题",
+      "url": "URL",
+      "domain": "域名",
+      "browser": "浏览器",
+      "profile": "配置文件",
+      "duration": "停留时长"
+    },
+    "columnSettings": "列设置",
+    "export": "导出",
+    "sync": "立即同步",
+    "empty": "暂无历史记录，请在数据源中点击同步",
+    "loading": "加载中...",
+    "selectedCount": "已选择 {{count}} 项",
+    "deleteSelected": "删除选中",
+    "deleteConfirmTitle": "确认从本地归档中删除？",
+    "deleteConfirmDesc": "此操作仅删除软件自身的本地归档数据，绝不会影响浏览器原始数据。"
+  },
+  "detail": {
+    "title": "访问详情",
+    "openInBrowser": "浏览器打开",
+    "copyUrl": "复制 URL",
+    "copyTitle": "复制标题",
+    "copied": "已复制到剪贴板",
+    "visitTime": "访问时间",
+    "browserInfo": "来源配置",
+    "visitId": "源访问 ID",
+    "eventHash": "事件哈希",
+    "importedAt": "归档时间",
+    "historyPath": "数据库文件"
+  },
+  "sources": {
+    "title": "数据源管理",
+    "subtitle": "发现本机已安装浏览器与配置文件，数据读取仅通过只读临时快照进行",
+    "rescan": "重新扫描",
+    "syncAll": "同步全部",
+    "browser": "浏览器",
+    "profile": "配置文件",
+    "status": "状态",
+    "lastModified": "最近活动",
+    "historyFile": "历史数据库",
+    "action": "操作",
+    "sync": "同步",
+    "running": "运行中",
+    "closed": "未运行",
+    "syncSuccess": "同步完成：新增 {{inserted}} 条，重复 {{duplicate}} 条"
+  },
+  "processModal": {
+    "title": "浏览器正在运行",
+    "desc": "检测到 {{browser}} 正在运行中。浏览器打开期间历史数据库可能处于独占锁定状态。",
+    "cancel": "取消",
+    "trySync": "尝试直接同步",
+    "closeAndSync": "关闭浏览器并同步"
+  },
+  "settings": {
+    "title": "系统设置",
+    "language": "界面语言",
+    "theme": "外观主题",
+    "themeLight": "浅色",
+    "themeDark": "深色",
+    "themeSystem": "跟随系统",
+    "databasePath": "数据库存储位置",
+    "tempPath": "临时快照目录",
+    "logsPath": "日志目录",
+    "archiveSize": "归档数据体积"
+  }
+}

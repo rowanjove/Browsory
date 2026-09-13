@@ -1,0 +1,40 @@
+# Dependencies and build output
+node_modules/
+dist/
+src-tauri/target/
+
+# Local browser archives and application data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+logs/
+temp/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Locally generated release artifacts
+release/
+*.exe
+*.msi
+*.zip
+*.sha256
+
+# Editors, operating systems, and local notes
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+temp_user_req.txt
+.tmp*
+*.tmp
+temp/

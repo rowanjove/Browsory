@@ -1,0 +1,87 @@
+{
+  "nav": {
+    "history": "History",
+    "analytics": "Analytics",
+    "sources": "Sources",
+    "ai": "AI Assistant",
+    "settings": "Settings"
+  },
+  "history": {
+    "searchPlaceholder": "Search title or URL...",
+    "allBrowsers": "All Browsers",
+    "timeRange": {
+      "all": "All Time",
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "last7Days": "Last 7 Days",
+      "last30Days": "Last 30 Days",
+      "thisYear": "This Year"
+    },
+    "columns": {
+      "time": "Time",
+      "title": "Title",
+      "url": "URL",
+      "domain": "Domain",
+      "browser": "Browser",
+      "profile": "Profile",
+      "duration": "Duration"
+    },
+    "columnSettings": "Columns",
+    "export": "Export",
+    "sync": "Sync Now",
+    "empty": "No archived history found. Please sync from Sources.",
+    "loading": "Loading...",
+    "selectedCount": "{{count}} item(s) selected",
+    "deleteSelected": "Delete Selected",
+    "deleteConfirmTitle": "Delete from local archive?",
+    "deleteConfirmDesc": "This will only remove records from the local archive database and will NEVER touch your original browser history."
+  },
+  "detail": {
+    "title": "Visit Details",
+    "openInBrowser": "Open in Browser",
+    "copyUrl": "Copy URL",
+    "copyTitle": "Copy Title",
+    "copied": "Copied to clipboard",
+    "visitTime": "Visit Time",
+    "browserInfo": "Source Profile",
+    "visitId": "Source Visit ID",
+    "eventHash": "Event Hash",
+    "importedAt": "Archived At",
+    "historyPath": "Database File"
+  },
+  "sources": {
+    "title": "Sources Management",
+    "subtitle": "Auto-detects installed browsers & profiles. All access is done via read-only temporary snapshots.",
+    "rescan": "Rescan",
+    "syncAll": "Sync All",
+    "browser": "Browser",
+    "profile": "Profile",
+    "status": "Status",
+    "lastModified": "Last Activity",
+    "historyFile": "History File",
+    "action": "Action",
+    "sync": "Sync",
+    "running": "Running",
+    "closed": "Closed",
+    "syncSuccess": "Sync finished: {{inserted}} added, {{duplicate}} skipped"
+  },
+  "processModal": {
+    "title": "Browser is Running",
+    "desc": "Detected that {{browser}} is currently active. The history database might be locked while running.",
+    "cancel": "Cancel",
+    "trySync": "Try Direct Sync",
+    "closeAndSync": "Close Browser & Sync"
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "theme": "Appearance",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "themeSystem": "System",
+    "databasePath": "Database Location",
+    "tempPath": "Temporary Snapshot Directory",
+    "logsPath": "Logs Directory",
+    "archiveSize": "Archive Size"
+  }
+}
