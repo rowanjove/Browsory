@@ -8,5 +8,10 @@ on:
   workflow_dispatch:
 
 jobs:
-  tauri-windows:
-    uses: rowanjove/.github/.github/workflows/tauri-windows.yml@main
+  rust:
+    uses: rowanjove/.github/.github/workflows/rust-ci.yml@main
+    with:
+      working-directory: src-tauri
+
+  node:
+    uses: rowanjove/.github/.github/workflows/node-ci.yml@main
