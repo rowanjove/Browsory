@@ -117,7 +117,21 @@ export const SourcesPage: React.FC = () => {
     try {
       const selected = await open({
         multiple: true,
-        title: '选择浏览器 History 数据库文件（支持按住 Ctrl / Shift 多选）',
+        title: '选择浏览器 History 数据库或 Google Takeout JSON 归档（支持多选）',
+        filters: [
+          {
+            name: '浏览器历史数据文件 (*.json, *.sqlite, *.*)',
+            extensions: ['json', 'sqlite', 'sqlite3', 'db', '*'],
+          },
+          {
+            name: 'Google Takeout (*.json)',
+            extensions: ['json'],
+          },
+          {
+            name: '所有文件 (*.*)',
+            extensions: ['*'],
+          },
+        ],
       });
       if (!selected) return;
 
@@ -134,8 +148,11 @@ export const SourcesPage: React.FC = () => {
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: 'Google Takeout 历史文件', extensions: ['json'] }],
-        title: '选择 Google Takeout 导出的 Records.json 或 BrowserHistory.json',
+        filters: [
+          { name: 'Google Takeout 历史文件 (*.json)', extensions: ['json'] },
+          { name: '所有文件 (*.*)', extensions: ['*'] },
+        ],
+        title: '选择 Google Takeout 导出的 历史记录.json / Records.json / BrowserHistory.json',
       });
       if (!selected) return;
       const filePath = Array.isArray(selected) ? selected[0] : selected;

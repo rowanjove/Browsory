@@ -270,12 +270,10 @@ pub async fn get_resume_suggestion(db: State<'_, DbState>) -> Result<ResumeSugge
 
     for line in ai_text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('-')
-            || trimmed.starts_with('*')
-            || (trimmed.len() > 2
-                && trimmed.chars().next().unwrap().is_ascii_digit()
-                && trimmed.chars().nth(1) == Some('.'))
-        {
+        let is_numbered = trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && trimmed.chars().nth(1) == Some('.');
+
+        if trimmed.starts_with('-') || trimmed.starts_with('*') || is_numbered {
             next_steps.push(
                 trimmed
                     .trim_start_matches(|c: char| {

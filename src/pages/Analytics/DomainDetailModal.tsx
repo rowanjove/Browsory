@@ -138,7 +138,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
               <h2 className="font-semibold text-slate-900 dark:text-slate-100 text-sm flex items-center gap-2">
                 <span>{domain}</span>
               </h2>
-              <p className="text-[11px] text-slate-400">域名访问深度下钻与 URL 路径探索</p>
+              <p className="text-[11px] text-slate-400">域名访问指标与 URL 路径结构</p>
             </div>
           </div>
 
@@ -299,8 +299,10 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
                             </div>
                             <a
                               href={u.url}
-                              target="_blank"
-                              rel="noreferrer"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                tauriApi.openExternalUrl(u.url);
+                              }}
                               className="text-[11px] text-blue-500 dark:text-blue-400 hover:underline truncate flex items-center gap-1 font-mono"
                             >
                               <span className="truncate">{u.url}</span>

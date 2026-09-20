@@ -302,37 +302,6 @@ export const Topbar: React.FC = () => {
                       </button>
                     </div>
                   </div>
-
-                  {/* 3. 常用快捷范围 */}
-                  <div className="flex flex-col gap-1 pt-2 border-t border-slate-100 dark:border-slate-700">
-                    <span className="text-[10px] text-slate-400 font-medium">快捷预设</span>
-                    <div className="grid grid-cols-3 gap-1">
-                      {[
-                        { key: 'all', label: '全部时间' },
-                        { key: 'today', label: '今天' },
-                        { key: 'yesterday', label: '昨天' },
-                        { key: 'last7Days', label: '近 7 天' },
-                        { key: 'last30Days', label: '近 30 天' },
-                        { key: 'thisYear', label: '今年' },
-                      ].map((preset) => (
-                        <button
-                          key={preset.key}
-                          type="button"
-                          onClick={() => {
-                            setTimeRange(preset.key as TimeRangeKey);
-                            setShowCalendarPopover(false);
-                          }}
-                          className={`px-2 py-1 rounded text-[11px] transition text-center ${
-                            timeRange === preset.key && !selectedDate
-                              ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 font-medium'
-                              : 'hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'
-                          }`}
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
                 </div>
               )}
             </div>

@@ -257,7 +257,7 @@ export const AIPage: React.FC = () => {
         <div className="flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-indigo-500" />
           <h1 className="text-base font-semibold text-slate-800 dark:text-slate-100">
-            Personal Web Memory (AI 语义记忆与认知中枢)
+            历史分析与智能问答
           </h1>
         </div>
 
@@ -294,7 +294,7 @@ export const AIPage: React.FC = () => {
             }`}
           >
             <Compass className="w-3.5 h-3.5" />
-            <span>断点续研 2.0</span>
+            <span>断点续研</span>
           </button>
           <button
             onClick={() => setActiveTab('index')}
@@ -327,10 +327,10 @@ export const AIPage: React.FC = () => {
           <div className="bg-white dark:bg-slate-800 p-4 rounded border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col gap-3">
             <span className="font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-2">
               <Bot className="w-4 h-4 text-indigo-500" />
-              <span>向你的个人 Web 历史提问 (Grounded AI Q&A)</span>
+              <span>基于历史记录提问</span>
             </span>
             <p className="text-slate-500 text-xs">
-              AI 将基于本地历史索引直接检索候选网页作为证据链，并基于真实历史回答你的问题。
+              系统将从本地历史中检索候选网页作为参考上下文，回答你的问题。
             </p>
 
             <form
@@ -541,26 +541,26 @@ export const AIPage: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 3: Resume Research 2.0 */}
+      {/* TAB 3: Resume Research */}
       {activeTab === 'resume' && (
         <div className="flex flex-col gap-4 mt-5 max-w-3xl">
           <div className="bg-white dark:bg-slate-800 p-4 rounded border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col gap-3">
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                 <Compass className="w-4 h-4 text-blue-500" />
-                <span>断点续研 2.0 (Resume Research Workspace)</span>
+                <span>断点续研</span>
               </span>
               <button
                 onClick={handleFetchResume}
                 disabled={isLoadingResume}
-                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium flex items-center gap-1.5 transition disabled:opacity-50 text-[11px]"
+                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium flex items-center gap-1.5 transition disabled:opacity-50 text-[11px] cursor-pointer"
               >
                 {isLoadingResume ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
                 <span>分析最近研究会话</span>
               </button>
             </div>
             <p className="text-slate-500">
-              根据你最近一次高密度的连续研究探索 Session，由 AI 自动推导当时的研究课题，并给出行动路线。
+              根据最近一次连续探索的研究会话，分析当时关注的议题，并给出进一步阅读参考。
             </p>
           </div>
 
@@ -584,7 +584,7 @@ export const AIPage: React.FC = () => {
 
               <div className="flex flex-col gap-2 pt-2 border-t border-slate-100 dark:border-slate-700">
                 <span className="font-medium text-slate-600 dark:text-slate-300 text-[11px]">
-                  推荐的下一步续研行动：
+                  建议后续参考：
                 </span>
                 <div className="flex flex-col gap-1.5">
                   {resumeData.next_steps.map((step, i) => (

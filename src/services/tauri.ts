@@ -4,8 +4,13 @@ import {
   AnalyticsSummary,
   AppInfo,
   BackupInfo,
+  BackgroundJob,
   BatchImportResult,
+  DiagnosticsInfo,
   DiscoveredProfile,
+  PageArchiveDetail,
+  PageArchiveSummary,
+  SaveArchivePayload,
   DomainDetail,
   DomainDynamics,
   EmbeddingIndexingStatus,
@@ -23,13 +28,20 @@ import {
   SecurityState,
   SimilarPageItem,
   SmartCollection,
+  StorageBreakdown,
+  StorageCleanResult,
   SyncResult,
   TagItem,
   TakeoutImportSummary,
   TestAiPayload,
   TestAiResult,
+  TestEmbeddingPayload,
   TopicItem,
   VisitDetail,
+  WebDavConfig,
+  SyncStatusReport,
+  LicenseCertificate,
+  LicenseInfo,
   WebsiteRankingItem,
   WebMemoryAnswer,
   InterestEvolution,
@@ -56,6 +68,7 @@ function handleMock(cmd: string, _args?: any): any {
     case 'get_website_ranking': return [];
     case 'get_domain_dynamics': return { new_domains: [], dormant_domains: [], rising_domains: [] };
     case 'get_interest_evolution': return [];
+    case 'list_smart_collections':
     case 'get_smart_collections': return [];
     case 'get_recent_import_jobs': return [];
     case 'list_privacy_rules': return [];
@@ -63,6 +76,7 @@ function handleMock(cmd: string, _args?: any): any {
     case 'list_tags': return [];
     case 'get_research_sessions': return [];
     case 'get_on_this_day': return { items: [], total_count: 0 };
+    case 'get_embedding_status':
     case 'get_embedding_indexing_status': return { total_urls: 100, indexed_urls: 100, is_indexing: false };
     case 'test_ai_connection': return { success: true, latency_ms: 120, message: 'AI 服务端点连接测试通过（Mock）' };
     default: return null;
@@ -130,9 +144,22 @@ export const tauriApi = {
     return invoke<void>('set_setting', { key, value });
   },
 
-  getAnalytics: async (days?: number, startTime?: number, endTime?: number): Promise<AnalyticsSummary> => {
+  getAnalytics: async (
+    daysOrOptions?: number | { days?: number; startTime?: number; endTime?: number },
+    startTime?: number,
+    endTime?: number
+  ): Promise<AnalyticsSummary> => {
     if (!isTauri) return mockAnalytics;
-    return invoke<AnalyticsSummary>('get_analytics', { days, startTime, endTime });
+    let payload: { days?: number; startTime?: number; endTime?: number } = {};
+    if (typeof daysOrOptions === 'object' && daysOrOptions !== null) {
+      payload = daysOrOptions;
+    } else if (typeof daysOrOptions === 'number' && daysOrOptions > 3650) {
+      // If a large number (timestamp in ms) was passed as first argument, map to startTime
+      payload = { startTime: daysOrOptions, endTime: startTime };
+    } else {
+      payload = { days: daysOrOptions, startTime, endTime };
+    }
+    return invoke<AnalyticsSummary>('get_analytics', payload);
   },
 
   exportHistory: async (options: ExportOptions): Promise<number> => {
@@ -164,6 +191,11 @@ export const tauriApi = {
   testAiConnection: async (payload: TestAiPayload): Promise<TestAiResult> => {
     if (!isTauri) return { success: true, latency_ms: 120, message: 'AI 服务端点连接测试通过（Mock）' };
     return invoke<TestAiResult>('test_ai_connection', { payload });
+  },
+
+  testEmbeddingConnection: async (payload: TestEmbeddingPayload): Promise<TestAiResult> => {
+    if (!isTauri) return { success: true, latency_ms: 95, message: '向量端点测试通过 (Mock 维度: 1536)' };
+    return invoke<TestAiResult>('test_embedding_connection', { payload });
   },
 
   callAiCompletion: async (prompt: string, systemPrompt?: string): Promise<string> => {
@@ -366,6 +398,71 @@ export const tauriApi = {
 
   getLinkHealth: async (urlId: number): Promise<LinkHealthStatus | null> => {
     return invoke<LinkHealthStatus | null>('get_link_health', { urlId });
+  },
+
+  // Milestone D: Diagnostics & Health Center
+  getDiagnosticsInfo: async (): Promise<DiagnosticsInfo> => {
+    return invoke<DiagnosticsInfo>('get_diagnostics_info');
+  },
+
+  exportDiagnosticsBundle: async (targetPath?: string): Promise<string> => {
+    return invoke<string>('export_diagnostics_bundle', { targetPath });
+  },
+
+  // Milestone E: Storage Manager
+  getStorageBreakdown: async (): Promise<StorageBreakdown> => {
+    return invoke<StorageBreakdown>('get_storage_breakdown');
+  },
+
+  cleanStorageCache: async (): Promise<StorageCleanResult> => {
+    return invoke<StorageCleanResult>('clean_storage_cache');
+  },
+
+  // Milestone G: Offline Page Archives & Background Jobs
+  saveOfflineArchive: async (payload: SaveArchivePayload): Promise<PageArchiveSummary> => {
+    return invoke<PageArchiveSummary>('save_offline_archive', { payload });
+  },
+
+  getOfflineArchive: async (urlId: number): Promise<PageArchiveDetail | null> => {
+    return invoke<PageArchiveDetail | null>('get_offline_archive', { urlId });
+  },
+
+  listOfflineArchives: async (limit?: number, offset?: number): Promise<PageArchiveSummary[]> => {
+    return invoke<PageArchiveSummary[]>('list_offline_archives', { limit, offset });
+  },
+
+  deleteOfflineArchive: async (pageUuid: string): Promise<void> => {
+    return invoke<void>('delete_offline_archive', { pageUuid });
+  },
+
+  listBackgroundJobs: async (limit?: number): Promise<BackgroundJob[]> => {
+    return invoke<BackgroundJob[]>('list_background_jobs', { limit });
+  },
+
+  cancelBackgroundJob: async (jobId: string): Promise<void> => {
+    return invoke<void>('cancel_background_job', { jobId });
+  },
+
+  // Milestone H: E2EE Multi-Device Sync
+  testWebDavSync: async (config: WebDavConfig): Promise<void> => {
+    return invoke<void>('test_webdav_sync', { config });
+  },
+
+  executeWebDavSync: async (config: WebDavConfig): Promise<SyncStatusReport> => {
+    return invoke<SyncStatusReport>('execute_webdav_sync', { config });
+  },
+
+  // Milestone I & J: License & Commercial Pro
+  getLicenseInfo: async (): Promise<LicenseInfo> => {
+    return invoke<LicenseInfo>('get_license_info');
+  },
+
+  activateLicense: async (licenseKey: string): Promise<LicenseCertificate> => {
+    return invoke<LicenseCertificate>('activate_license', { licenseKey });
+  },
+
+  deactivateLicense: async (): Promise<void> => {
+    return invoke<void>('deactivate_license');
   },
 };
 

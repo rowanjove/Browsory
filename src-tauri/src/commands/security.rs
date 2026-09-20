@@ -329,24 +329,23 @@ pub fn delete_privacy_rule(id: i64, db: State<'_, DbState>) -> AppResult<()> {
 // Database Maintenance, Backup & Restore Commands
 // ==========================================
 
-#[tauri::command]
-pub fn create_database_backup(
-    notes: Option<String>,
-    db: State<'_, DbState>,
+pub fn execute_backup_internal(
+    conn: &rusqlite::Connection,
+    backups_dir: &std::path::Path,
+    prefix: &str,
+    notes: Option<&str>,
 ) -> Result<BackupInfo, String> {
-    let backups_dir = db.app_dir.join("backups");
-    fs::create_dir_all(&backups_dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
+    fs::create_dir_all(backups_dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
 
     let timestamp_str = Utc::now().format("%Y%m%d_%H%M%S").to_string();
-    let file_name = format!("archive_backup_{}.db", timestamp_str);
+    let file_name = format!("{}_{}.db", prefix, timestamp_str);
     let target_path = backups_dir.join(&file_name);
 
     {
-        let conn = db.conn.lock().unwrap();
         let mut dest_conn = rusqlite::Connection::open(&target_path)
             .map_err(|e| format!("打开目标备份文件失败: {}", e))?;
 
-        let backup = rusqlite::backup::Backup::new(&conn, &mut dest_conn)
+        let backup = rusqlite::backup::Backup::new(conn, &mut dest_conn)
             .map_err(|e| format!("初始化 SQLite 在线备份失败: {}", e))?;
 
         backup
@@ -356,27 +355,83 @@ pub fn create_database_backup(
 
     let file_size_bytes = fs::metadata(&target_path).map(|m| m.len()).unwrap_or(0);
 
-    let conn = db.conn.lock().unwrap();
     let backup_info = repository::record_backup(
-        &conn,
+        conn,
         &file_name,
         &target_path.to_string_lossy(),
         file_size_bytes,
-        notes.as_deref(),
+        notes,
     )
     .map_err(|e| e.to_string())?;
 
     // Auto-prune old backups (keep latest 15)
-    if let Ok(all_backups) = repository::list_backups(&conn) {
+    if let Ok(all_backups) = repository::list_backups(conn) {
         if all_backups.len() > 15 {
             for old in &all_backups[15..] {
                 let _ = fs::remove_file(&old.file_path);
-                let _ = repository::delete_backup(&conn, old.id);
+                let _ = repository::delete_backup(conn, old.id);
             }
         }
     }
 
     Ok(backup_info)
+}
+
+/// Periodic automated background backup check
+pub fn check_and_run_auto_backup(db_state: &DbState) {
+    let backups_dir = db_state.app_dir.join("backups");
+    let conn = match db_state.conn.lock() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let auto_backup_enabled = repository::get_setting(&conn, "auto_backup_enabled")
+        .unwrap_or(None)
+        .unwrap_or_else(|| "1".to_string())
+        == "1";
+
+    if !auto_backup_enabled {
+        return;
+    }
+
+    let interval_days: i64 = repository::get_setting(&conn, "auto_backup_interval_days")
+        .unwrap_or(None)
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(1);
+
+    let now_ms = Utc::now().timestamp_millis();
+    let interval_ms = interval_days * 24 * 60 * 60 * 1000;
+
+    let last_backup_time: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(created_at), 0) FROM backups WHERE file_name LIKE 'archive_backup_%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    if now_ms - last_backup_time >= interval_ms {
+        tracing::info!("Triggering automated periodic database backup...");
+        match execute_backup_internal(
+            &conn,
+            &backups_dir,
+            "archive_backup_auto",
+            Some("系统自动日常备份"),
+        ) {
+            Ok(b) => tracing::info!("Automated backup created successfully: {}", b.file_name),
+            Err(e) => tracing::warn!("Automated backup failed: {}", e),
+        }
+    }
+}
+
+#[tauri::command]
+pub fn create_database_backup(
+    notes: Option<String>,
+    db: State<'_, DbState>,
+) -> Result<BackupInfo, String> {
+    let backups_dir = db.app_dir.join("backups");
+    let conn = db.conn.lock().unwrap();
+    execute_backup_internal(&conn, &backups_dir, "archive_backup", notes.as_deref())
 }
 
 #[tauri::command]

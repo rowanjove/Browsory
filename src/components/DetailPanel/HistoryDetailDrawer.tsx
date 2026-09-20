@@ -19,11 +19,13 @@ import {
   Sparkles,
   Loader2,
   Activity,
+  BookOpen,
 } from 'lucide-react';
 import { useHistoryStore } from '../../stores/useHistoryStore';
 import { useAppStore } from '../../stores/useAppStore';
 import { tauriApi } from '../../services/tauri';
 import { LinkHealthStatus } from '../../types';
+import { OfflineReaderModal } from './OfflineReaderModal';
 
 export const HistoryDetailDrawer: React.FC = () => {
   const {
@@ -44,6 +46,7 @@ export const HistoryDetailDrawer: React.FC = () => {
 
   const [linkHealth, setLinkHealth] = useState<LinkHealthStatus | null>(null);
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
+  const [isOfflineReaderOpen, setIsOfflineReaderOpen] = useState(false);
 
   useEffect(() => {
     if (!detailData?.url_id) {
@@ -309,12 +312,12 @@ export const HistoryDetailDrawer: React.FC = () => {
             </div>
           </div>
 
-          {/* Universal Archive & Link Health (留存与链接健康) */}
+          {/* Link Health & Archive */}
           <div className="flex flex-col gap-2 p-2.5 rounded bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/60">
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                 <ShieldCheck className="w-3.5 h-3.5 text-blue-500" />
-                <span>留存健康与历史快照</span>
+                <span>链接存活与本地阅读索引</span>
               </span>
               <button
                 onClick={handleCheckHealth}
@@ -358,7 +361,7 @@ export const HistoryDetailDrawer: React.FC = () => {
                 title="在互联网档案馆 (Archive.org) 查阅历史快照"
               >
                 <Archive className="w-3.5 h-3.5 text-amber-500" />
-                <span>Wayback 时光机快照</span>
+                <span>Wayback 历史快照</span>
               </button>
 
               <button
@@ -374,17 +377,27 @@ export const HistoryDetailDrawer: React.FC = () => {
                 <span>语义检索</span>
               </button>
             </div>
+
+            {/* Offline Reader Button */}
+            <button
+              onClick={() => setIsOfflineReaderOpen(true)}
+              className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl border border-blue-200 dark:border-blue-800/80 bg-blue-50/70 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 transition font-medium cursor-pointer text-xs"
+              title="查阅本地独立离线页面包、Markdown 正文或 HTML 快照"
+            >
+              <BookOpen className="w-3.5 h-3.5 text-blue-500" />
+                <span>本地阅读索引与记录</span>
+            </button>
           </div>
 
-          {/* Context Nearby Visits Stream (研究复原与上下文还原) */}
+          {/* Context Nearby Visits Stream */}
           <div className="flex flex-col gap-2 p-2.5 rounded bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/60">
             <div className="flex items-center justify-between">
               <span className="font-semibold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                 <Compass className="w-3.5 h-3.5 text-indigo-500" />
-                <span>附近浏览流 (前后时序还原)</span>
+                <span>前后访问时序</span>
               </span>
               <span className="text-[10px] text-slate-400">
-                {detailData.nearby_visits ? detailData.nearby_visits.length : 0} 条事件
+                {detailData.nearby_visits ? detailData.nearby_visits.length : 0} 条记录
               </span>
             </div>
 
@@ -491,7 +504,17 @@ export const HistoryDetailDrawer: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Offline Reader Modal */}
+      {isOfflineReaderOpen && detailData && (
+        <OfflineReaderModal
+          isOpen={isOfflineReaderOpen}
+          urlId={detailData.url_id}
+          url={detailData.url}
+          title={detailData.title || detailData.url}
+          onClose={() => setIsOfflineReaderOpen(false)}
+        />
+      )}
     </aside>
   );
 };
-

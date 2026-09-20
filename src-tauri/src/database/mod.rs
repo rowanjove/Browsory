@@ -1,4 +1,5 @@
 pub mod connection;
+pub mod encrypt_migration;
 pub mod migrations;
 pub mod models;
 pub mod repository;

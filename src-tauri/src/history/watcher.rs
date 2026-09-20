@@ -11,7 +11,6 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::database::repository::list_sources;
 use crate::database::DbState;
-use crate::history::sync::sync_source_history;
 
 pub struct HistoryWatcher {
     debouncer: Mutex<Debouncer<notify::RecommendedWatcher>>,
@@ -160,22 +159,56 @@ fn trigger_silent_sync(db_state: &DbState) {
                 continue;
             }
 
-            let mut conn = state.conn.lock().unwrap();
-            match sync_source_history(
-                &mut conn,
+            // 1. Fast incremental check: if file and WAL unchanged since last sync, skip with 0 disk I/O!
+            if !crate::history::sync::is_source_modified_since_last_sync(
+                &history_path,
+                source.last_sync_at,
+            ) {
+                continue;
+            }
+
+            let start_time = std::time::Instant::now();
+
+            // 2. Prepare snapshot & parse records WITHOUT holding the database lock
+            let prepared = match crate::history::sync::prepare_source_records(
                 source.id,
                 &source.browser,
-                &source.profile,
                 &history_path,
                 source.last_visit_time,
+                source.db_fingerprint.as_deref(),
                 &state.temp_dir,
             ) {
+                Ok(data) => data,
+                Err(e) => {
+                    error!(
+                        "Auto-sync preparation failed for source #{}: {} [{}]: {}",
+                        source.id, source.browser, source.profile, e
+                    );
+                    continue;
+                }
+            };
+
+            // 3. Commit records to archive.db holding lock ONLY during this brief transaction
+            let commit_res = {
+                let mut conn = state.conn.lock().unwrap();
+                crate::history::sync::commit_source_records(
+                    &mut conn,
+                    source.id,
+                    &source.browser,
+                    &source.profile,
+                    source.last_visit_time,
+                    prepared,
+                    start_time,
+                )
+            };
+
+            match commit_res {
                 Ok(res) => {
                     total_inserted += res.inserted_count;
                 }
                 Err(e) => {
                     error!(
-                        "Auto-sync failed for source #{}: {} [{}]: {}",
+                        "Auto-sync commit failed for source #{}: {} [{}]: {}",
                         source.id, source.browser, source.profile, e
                     );
                 }

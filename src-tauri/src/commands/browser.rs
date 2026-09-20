@@ -235,6 +235,56 @@ pub fn import_history_batch(
         };
 
         if !is_valid_sqlite {
+            let is_json = path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+
+            let try_takeout = is_json || path.extension().is_none();
+            let mut takeout_handled = false;
+
+            if try_takeout {
+                let takeout_res = {
+                    let mut conn = db.conn.lock().unwrap();
+                    crate::history::takeout::import_google_takeout_file(&mut conn, &path)
+                };
+
+                match takeout_res {
+                    Ok(summary) => {
+                        successful_files += 1;
+                        total_inserted += summary.visits_inserted as u32;
+                        total_duplicate += summary.duplicates_skipped as u32;
+                        file_results.push(BatchImportFileResult {
+                            file_path: file_path.clone(),
+                            file_name: file_name.clone(),
+                            success: true,
+                            inserted_count: summary.visits_inserted as u32,
+                            duplicate_count: summary.duplicates_skipped as u32,
+                            failed_count: 0,
+                            error: None,
+                        });
+                        takeout_handled = true;
+                    }
+                    Err(e) if is_json => {
+                        failed_files += 1;
+                        file_results.push(BatchImportFileResult {
+                            file_path: file_path.clone(),
+                            file_name: file_name.clone(),
+                            success: false,
+                            inserted_count: 0,
+                            duplicate_count: 0,
+                            failed_count: 0,
+                            error: Some(format!("Google Takeout 归档解析失败: {}", e)),
+                        });
+                        takeout_handled = true;
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            if takeout_handled {
+                continue;
+            }
+
             failed_files += 1;
             file_results.push(BatchImportFileResult {
                 file_path: file_path.clone(),
@@ -243,7 +293,7 @@ pub fn import_history_batch(
                 inserted_count: 0,
                 duplicate_count: 0,
                 failed_count: 0,
-                error: Some("不是有效的 Chromium 或 Firefox 历史记录数据库".to_string()),
+                error: Some("不是有效的 Chromium 或 Firefox 历史记录数据库，亦非支持的 Google Takeout JSON 归档".to_string()),
             });
             continue;
         }

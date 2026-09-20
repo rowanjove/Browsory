@@ -8,6 +8,23 @@ use crate::database::repository::{
 use crate::database::DbState;
 use crate::error::AppResult;
 
+const WEBDAV_CONFIG_KEY: &str = "webdav_sync_config";
+const WEBDAV_PASSWORD_SECRET: &str = "webdav_password";
+
+fn sanitize_webdav_config(value: &str, app_dir: &std::path::Path) -> AppResult<String> {
+    let mut config: crate::sync::webdav::WebDavConfig = serde_json::from_str(value)
+        .map_err(|e| crate::error::AppError::Parse(format!("WebDAV 配置格式无效: {}", e)))?;
+    let password = config.password.trim().to_string();
+    if !password.is_empty() && !password.contains('•') {
+        crate::security::secret_store::set_secret(WEBDAV_PASSWORD_SECRET, &password, app_dir)
+            .map_err(|e| {
+                crate::error::AppError::Security(format!("保存 WebDAV 密码失败: {}", e))
+            })?;
+    }
+    config.password.clear();
+    serde_json::to_string(&config).map_err(Into::into)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppInfo {
     pub app_dir: String,
@@ -33,8 +50,8 @@ pub fn get_app_info(db: State<'_, DbState>) -> AppResult<AppInfo> {
 
 #[tauri::command]
 pub fn get_setting(key: String, db: State<'_, DbState>) -> AppResult<Option<String>> {
-    if key == "ai_key" {
-        let raw = crate::security::secret_store::get_secret("ai_key", &db.app_dir).unwrap_or(None);
+    if key == "ai_key" || key == "ai_embedding_key" {
+        let raw = crate::security::secret_store::get_secret(&key, &db.app_dir).unwrap_or(None);
         return Ok(raw.map(|k| {
             let trimmed = k.trim();
             if trimmed.len() > 8 {
@@ -49,21 +66,36 @@ pub fn get_setting(key: String, db: State<'_, DbState>) -> AppResult<Option<Stri
         }));
     }
     let conn = db.conn.lock().unwrap();
-    repo_get_setting(&conn, &key)
+    let value = repo_get_setting(&conn, &key)?;
+    drop(conn);
+    if key == WEBDAV_CONFIG_KEY {
+        return value
+            .map(|raw| sanitize_webdav_config(&raw, &db.app_dir))
+            .transpose();
+    }
+    Ok(value)
 }
 
 #[tauri::command]
 pub fn set_setting(key: String, value: String, db: State<'_, DbState>) -> AppResult<()> {
-    if key == "ai_key" {
+    if key == "ai_key" || key == "ai_embedding_key" {
         // Do not overwrite real stored key if user left masked value unchanged
         if value.contains('•') {
             return Ok(());
         }
-        crate::security::secret_store::set_secret("ai_key", &value, &db.app_dir)
+        crate::security::secret_store::set_secret(&key, &value, &db.app_dir)
             .map_err(|e| crate::error::AppError::Other(format!("无法安全存储 API Key: {}", e)))?;
         let conn = db.conn.lock().unwrap();
-        let _ = conn.execute("DELETE FROM settings WHERE key = 'ai_key'", []);
+        let _ = conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            rusqlite::params![key],
+        );
         return Ok(());
+    }
+    if key == WEBDAV_CONFIG_KEY {
+        let sanitized = sanitize_webdav_config(&value, &db.app_dir)?;
+        let conn = db.conn.lock().unwrap();
+        return repo_set_setting(&conn, &key, &sanitized);
     }
     let conn = db.conn.lock().unwrap();
     repo_set_setting(&conn, &key, &value)
@@ -98,7 +130,8 @@ pub async fn call_ai_completion(
         .unwrap_or_default();
 
     let trimmed_base = base_url.trim().trim_end_matches('/');
-    let is_local = trimmed_base.contains("localhost") || trimmed_base.contains("127.0.0.1");
+    validate_ai_endpoint(trimmed_base)?;
+    let is_local = crate::commands::settings::is_local_ai_endpoint(trimmed_base);
 
     if api_key.trim().is_empty() && !is_local {
         return Err("未配置 API Key。若使用在线商用模型，请先在“系统设置”页面配置 API Key；若为本地 Ollama 则可免 Key。".to_string());
@@ -106,16 +139,18 @@ pub async fn call_ai_completion(
 
     let endpoint = format!("{}/chat/completions", trimmed_base);
 
+    let safe_prompt = crate::ai::privacy::sanitize_prompt_for_ai(&payload.prompt, is_local);
+
     let mut messages = Vec::new();
     if let Some(sys) = payload.system_prompt {
         messages.push(serde_json::json!({
             "role": "system",
-            "content": sys,
+            "content": crate::ai::privacy::sanitize_prompt_for_ai(&sys, is_local),
         }));
     }
     messages.push(serde_json::json!({
         "role": "user",
-        "content": payload.prompt,
+        "content": safe_prompt,
     }));
 
     let request_body = serde_json::json!({
@@ -187,7 +222,8 @@ pub async fn test_ai_connection(
         return Err("Base URL 不能为空".to_string());
     }
 
-    let is_local = trimmed_base.contains("localhost") || trimmed_base.contains("127.0.0.1");
+    validate_ai_endpoint(trimmed_base)?;
+    let is_local = crate::commands::settings::is_local_ai_endpoint(trimmed_base);
     let mut key = payload.api_key.unwrap_or_default();
 
     if (key.trim().is_empty() || key.contains('•')) && !is_local {
@@ -281,4 +317,127 @@ pub async fn test_ai_connection(
         latency_ms,
         message: format!("连接成功！模型响应正常 (耗时 {}ms)", latency_ms),
     })
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TestEmbeddingPayload {
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: String,
+}
+
+#[tauri::command]
+pub async fn test_embedding_connection(
+    payload: TestEmbeddingPayload,
+    db: State<'_, DbState>,
+) -> Result<TestAiResult, String> {
+    let start_time = std::time::Instant::now();
+    let model = payload.model.trim();
+    if model.is_empty() {
+        return Err("向量模型名称不能为空".to_string());
+    }
+
+    let (conn_base_url, _, conn_api_key) = {
+        let conn = db.conn.lock().unwrap();
+        crate::commands::ai::get_embedding_credentials(&conn, &db.app_dir)
+    };
+
+    let base_url = match payload.base_url {
+        Some(b) if !b.trim().is_empty() => b.trim().to_string(),
+        _ => conn_base_url,
+    };
+
+    let mut key = match payload.api_key {
+        Some(k) if !k.contains('•') && !k.trim().is_empty() => k.trim().to_string(),
+        _ => conn_api_key,
+    };
+
+    if key.trim().is_empty() || key.contains('•') {
+        if let Ok(Some(real_key)) =
+            crate::security::secret_store::get_secret("ai_embedding_key", &db.app_dir)
+        {
+            key = real_key;
+        }
+    }
+
+    let trimmed_base = base_url.trim().trim_end_matches('/');
+    if trimmed_base.is_empty() {
+        return Err("Base URL 不能为空，请配置向量服务 Base URL".to_string());
+    }
+
+    validate_ai_endpoint(trimmed_base)?;
+    let is_local = crate::commands::settings::is_local_ai_endpoint(trimmed_base);
+    if key.trim().is_empty() && !is_local {
+        return Err("在线服务商需提供有效 API Key；若为本地 Ollama 可免 Key。".to_string());
+    }
+
+    let sample_texts = ["Browsory embedding ping test"];
+    let vectors = crate::ai::embedding::fetch_embeddings(trimmed_base, &key, model, &sample_texts)
+        .await
+        .map_err(|e| format!("向量接口测试失败: {}", e))?;
+
+    let dim = vectors.first().map(|v| v.len()).unwrap_or(0);
+    let latency_ms = start_time.elapsed().as_millis() as u64;
+
+    Ok(TestAiResult {
+        success: true,
+        latency_ms,
+        message: format!(
+            "向量端点连接成功！模型 '{}' 返回特征维度: {} 维 (耗时 {}ms)",
+            model, dim, latency_ms
+        ),
+    })
+}
+
+/// Determines whether an AI endpoint is a local loopback service. Host parsing
+/// is required so names such as `localhost.evil.example` are never trusted.
+pub fn is_local_ai_endpoint(raw: &str) -> bool {
+    let Ok(url) = url::Url::parse(raw.trim()) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || matches!(
+            url.host(),
+            Some(url::Host::Ipv4(ip)) if ip.is_loopback()
+        )
+        || matches!(
+            url.host(),
+            Some(url::Host::Ipv6(ip)) if ip.is_loopback()
+        )
+}
+
+pub(crate) fn validate_ai_endpoint(raw: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(raw).map_err(|e| format!("AI 端点地址无效: {}", e))?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("AI 端点地址不得内嵌用户名或密码".into());
+    }
+    let local = is_local_ai_endpoint(raw);
+    if parsed.scheme() != "https" && !(parsed.scheme() == "http" && local) {
+        return Err("远程 AI 端点必须使用 HTTPS；HTTP 仅允许回环地址".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_local_ai_endpoint, validate_ai_endpoint};
+
+    #[test]
+    fn local_endpoint_detection_requires_loopback_host() {
+        assert!(is_local_ai_endpoint("http://localhost:11434/v1"));
+        assert!(is_local_ai_endpoint("http://127.0.0.1:11434/v1"));
+        assert!(is_local_ai_endpoint("http://[::1]:11434/v1"));
+        assert!(!is_local_ai_endpoint("http://ollama.localhost:11434/v1"));
+        assert!(!is_local_ai_endpoint("https://localhost.evil.example/v1"));
+        assert!(!is_local_ai_endpoint("https://evil.example/localhost/v1"));
+    }
+
+    #[test]
+    fn remote_ai_endpoint_requires_https() {
+        assert!(validate_ai_endpoint("https://api.example/v1").is_ok());
+        assert!(validate_ai_endpoint("http://api.example/v1").is_err());
+    }
 }

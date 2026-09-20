@@ -19,7 +19,10 @@ use crate::security::secret_store;
 
 const DEFAULT_EMBEDDING_MODEL: &str = "text-embedding-3-small";
 
-fn get_ai_credentials(conn: &Connection, app_dir: &std::path::Path) -> (String, String, String) {
+pub fn get_ai_credentials(
+    conn: &Connection,
+    app_dir: &std::path::Path,
+) -> (String, String, String) {
     let base_url: String = conn
         .query_row(
             "SELECT value FROM settings WHERE key = 'ai_base_url'",
@@ -42,13 +45,50 @@ fn get_ai_credentials(conn: &Connection, app_dir: &std::path::Path) -> (String, 
     (base_url, model, api_key)
 }
 
+pub fn get_embedding_credentials(
+    conn: &Connection,
+    app_dir: &std::path::Path,
+) -> (String, String, String) {
+    let emb_base_url: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'ai_embedding_base_url'",
+            [],
+            |r| r.get(0),
+        )
+        .ok()
+        .filter(|s: &String| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+
+    let emb_model: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'ai_embedding_model'",
+            [],
+            |r| r.get(0),
+        )
+        .ok()
+        .filter(|s: &String| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string());
+
+    let emb_key = secret_store::get_secret("ai_embedding_key", app_dir)
+        .unwrap_or(None)
+        .unwrap_or_default();
+
+    (emb_base_url, emb_model, emb_key)
+}
+
 #[tauri::command]
 pub async fn get_embedding_status(
     model: Option<String>,
     db: State<'_, DbState>,
 ) -> Result<EmbeddingIndexingStatus, String> {
     let conn = db.conn.lock().unwrap();
-    let m = model.unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string());
+    let m = match model {
+        Some(m) if !m.trim().is_empty() => m,
+        _ => {
+            let (_, configured_model, _) = get_embedding_credentials(&conn, &db.app_dir);
+            configured_model
+        }
+    };
     repo_get_embedding_indexing_status(&conn, &m).map_err(|e: AppError| e.to_string())
 }
 
@@ -58,13 +98,14 @@ pub async fn generate_embeddings_batch(
     batch_size: Option<usize>,
     db: State<'_, DbState>,
 ) -> Result<usize, String> {
-    let emb_model = model.unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string());
     let limit = batch_size.unwrap_or(20);
 
-    let (base_url, _chat_model, api_key) = {
+    let (base_url, configured_model, api_key) = {
         let conn = db.conn.lock().unwrap();
-        get_ai_credentials(&conn, &db.app_dir)
+        get_embedding_credentials(&conn, &db.app_dir)
     };
+    crate::commands::settings::validate_ai_endpoint(&base_url)?;
+    let emb_model = model.unwrap_or(configured_model);
 
     let unindexed = {
         let conn = db.conn.lock().unwrap();
@@ -86,7 +127,12 @@ pub async fn generate_embeddings_batch(
         })
         .collect();
 
-    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let is_local = crate::commands::settings::is_local_ai_endpoint(&base_url);
+    let request_texts: Vec<String> = texts
+        .iter()
+        .map(|text| crate::ai::privacy::sanitize_prompt_for_ai(text, is_local))
+        .collect();
+    let text_refs: Vec<&str> = request_texts.iter().map(|s| s.as_str()).collect();
 
     let embeddings = fetch_embeddings(&base_url, &api_key, &emb_model, &text_refs)
         .await
@@ -119,31 +165,27 @@ pub async fn hybrid_search(
         return Ok(Vec::new());
     }
 
-    let (base_url, _, api_key) = {
+    let (base_url, emb_model, api_key) = {
         let conn = db.conn.lock().unwrap();
-        get_ai_credentials(&conn, &db.app_dir)
+        get_embedding_credentials(&conn, &db.app_dir)
     };
+    crate::commands::settings::validate_ai_endpoint(&base_url)?;
 
     // Attempt to generate query vector if credentials exist
-    let query_vector =
-        if !base_url.is_empty() && (!api_key.is_empty() || base_url.contains("localhost")) {
-            fetch_embeddings(&base_url, &api_key, DEFAULT_EMBEDDING_MODEL, &[trimmed])
-                .await
-                .ok()
-                .and_then(|mut v| v.pop())
-        } else {
-            None
-        };
+    let is_local = crate::commands::settings::is_local_ai_endpoint(&base_url);
+    let query_vector = if !base_url.is_empty() && (!api_key.is_empty() || is_local) {
+        let safe_query = crate::ai::privacy::sanitize_prompt_for_ai(trimmed, is_local);
+        fetch_embeddings(&base_url, &api_key, &emb_model, &[safe_query.as_str()])
+            .await
+            .ok()
+            .and_then(|mut v| v.pop())
+    } else {
+        None
+    };
 
     let conn = db.conn.lock().unwrap();
-    repo_hybrid_search_history(
-        &conn,
-        trimmed,
-        query_vector.as_deref(),
-        DEFAULT_EMBEDDING_MODEL,
-        lim,
-    )
-    .map_err(|e: AppError| e.to_string())
+    repo_hybrid_search_history(&conn, trimmed, query_vector.as_deref(), &emb_model, lim)
+        .map_err(|e: AppError| e.to_string())
 }
 
 #[tauri::command]
@@ -154,7 +196,13 @@ pub async fn get_similar_pages(
     db: State<'_, DbState>,
 ) -> Result<Vec<SimilarPageItem>, String> {
     let conn = db.conn.lock().unwrap();
-    let m = model.unwrap_or_else(|| DEFAULT_EMBEDDING_MODEL.to_string());
+    let m = match model {
+        Some(m) if !m.trim().is_empty() => m,
+        _ => {
+            let (_, configured_model, _) = get_embedding_credentials(&conn, &db.app_dir);
+            configured_model
+        }
+    };
     repo_find_similar_pages(&conn, url_id, &m, limit.unwrap_or(10))
         .map_err(|e: AppError| e.to_string())
 }

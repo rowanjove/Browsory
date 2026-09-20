@@ -7,158 +7,13 @@ use super::models::{
     HistoryFilter, HistoryPageResult, HourlyStat, HybridSearchResult, IntegrityReport,
     InterestEvolution, NewDomainItem, OnThisDayItem, OnThisDayResult, PathTreeNode,
     PeriodComparison, PrivacyRule, ResearchSession, SearchQueryStat, SecurityState,
-    SimilarPageItem, SmartCollection, Source, TagItem, TopicItem, TopicTrend, VisitDetail,
-    VisitListItem, WebMemoryCitation, WebsiteRankingItem, WeeklyHeatmapPoint,
+    SimilarPageItem, SmartCollection, TagItem, TopicItem, TopicTrend, VisitDetail, VisitListItem,
+    WebMemoryCitation, WebsiteRankingItem, WeeklyHeatmapPoint,
 };
 use crate::error::{AppError, AppResult};
 
-pub fn list_sources(conn: &Connection) -> AppResult<Vec<Source>> {
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT id, browser, profile, source_type, history_path, db_fingerprint,
-               last_visit_id, last_visit_time, last_sync_at, enabled
-        FROM sources
-        ORDER BY browser ASC, profile ASC
-        "#,
-    )?;
-
-    let rows = stmt.query_map([], |row| {
-        Ok(Source {
-            id: row.get(0)?,
-            browser: row.get(1)?,
-            profile: row.get(2)?,
-            source_type: row.get(3)?,
-            history_path: row.get(4)?,
-            db_fingerprint: row.get(5)?,
-            last_visit_id: row.get(6)?,
-            last_visit_time: row.get(7)?,
-            last_sync_at: row.get(8)?,
-            enabled: row.get::<_, i64>(9)? == 1,
-        })
-    })?;
-
-    let mut sources = Vec::new();
-    for r in rows {
-        sources.push(r?);
-    }
-    Ok(sources)
-}
-
-pub fn get_or_create_source(
-    conn: &Connection,
-    browser: &str,
-    profile: &str,
-    source_type: &str,
-    history_path: &str,
-) -> AppResult<Source> {
-    let existing: Option<Source> = conn
-        .query_row(
-            r#"
-            SELECT id, browser, profile, source_type, history_path, db_fingerprint,
-                   last_visit_id, last_visit_time, last_sync_at, enabled
-            FROM sources
-            WHERE browser = ?1 AND profile = ?2 AND history_path = ?3
-            "#,
-            params![browser, profile, history_path],
-            |row| {
-                Ok(Source {
-                    id: row.get(0)?,
-                    browser: row.get(1)?,
-                    profile: row.get(2)?,
-                    source_type: row.get(3)?,
-                    history_path: row.get(4)?,
-                    db_fingerprint: row.get(5)?,
-                    last_visit_id: row.get(6)?,
-                    last_visit_time: row.get(7)?,
-                    last_sync_at: row.get(8)?,
-                    enabled: row.get::<_, i64>(9)? == 1,
-                })
-            },
-        )
-        .optional()?;
-
-    if let Some(src) = existing {
-        return Ok(src);
-    }
-
-    conn.execute(
-        r#"
-        INSERT INTO sources (browser, profile, source_type, history_path)
-        VALUES (?1, ?2, ?3, ?4)
-        "#,
-        params![browser, profile, source_type, history_path],
-    )?;
-
-    let id = conn.last_insert_rowid();
-    Ok(Source {
-        id,
-        browser: browser.to_string(),
-        profile: profile.to_string(),
-        source_type: source_type.to_string(),
-        history_path: history_path.to_string(),
-        db_fingerprint: None,
-        last_visit_id: 0,
-        last_visit_time: 0,
-        last_sync_at: None,
-        enabled: true,
-    })
-}
-
-pub fn get_source_by_id(conn: &Connection, source_id: i64) -> AppResult<Option<Source>> {
-    conn.query_row(
-        r#"
-        SELECT id, browser, profile, source_type, history_path, db_fingerprint,
-               last_visit_id, last_visit_time, last_sync_at, enabled
-        FROM sources
-        WHERE id = ?1
-        "#,
-        params![source_id],
-        |row| {
-            Ok(Source {
-                id: row.get(0)?,
-                browser: row.get(1)?,
-                profile: row.get(2)?,
-                source_type: row.get(3)?,
-                history_path: row.get(4)?,
-                db_fingerprint: row.get(5)?,
-                last_visit_id: row.get(6)?,
-                last_visit_time: row.get(7)?,
-                last_sync_at: row.get(8)?,
-                enabled: row.get::<_, i64>(9)? == 1,
-            })
-        },
-    )
-    .optional()
-    .map_err(AppError::from)
-}
-
-pub fn update_source_sync(
-    conn: &Connection,
-    source_id: i64,
-    last_visit_id: i64,
-    last_visit_time: i64,
-    last_sync_at: i64,
-    db_fingerprint: Option<&str>,
-) -> AppResult<()> {
-    conn.execute(
-        r#"
-        UPDATE sources
-        SET last_visit_id = MAX(last_visit_id, ?1),
-            last_visit_time = MAX(last_visit_time, ?2),
-            last_sync_at = ?3,
-            db_fingerprint = COALESCE(?5, db_fingerprint)
-        WHERE id = ?4
-        "#,
-        params![
-            last_visit_id,
-            last_visit_time,
-            last_sync_at,
-            source_id,
-            db_fingerprint
-        ],
-    )?;
-    Ok(())
-}
+pub mod sources;
+pub use sources::*;
 
 struct AdvancedSearchCriteria {
     fts_tokens: Vec<String>,
@@ -3214,7 +3069,20 @@ pub fn hybrid_search_history(
         }
     }
 
-    // 3. Compute RRF scores
+    // 3. Collect favorites set for ranking boost
+    let fav_set: std::collections::HashSet<i64> = {
+        if let Ok(mut stmt) = conn.prepare("SELECT url_id FROM favorites") {
+            stmt.query_map([], |r| r.get(0))
+                .map(|rows| rows.flatten().collect())
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        }
+    };
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    // 4. Compute composite 4-layer scores (FTS + Vector RRF + Recency + Frequency + Favorites)
     let all_ids: Vec<i64> = url_details.keys().cloned().collect();
     let mut results = Vec::new();
 
@@ -3222,9 +3090,21 @@ pub fn hybrid_search_history(
         let fts_r = fts_ranks.get(&id).cloned();
         let vec_r = vec_ranks.get(&id).cloned();
         let sim = similarities.get(&id).cloned().unwrap_or(0.0);
-        let rrf = crate::ai::embedding::rrf_score(fts_r, vec_r, 60.0);
+        let base_rrf = crate::ai::embedding::rrf_score(fts_r, vec_r, 60.0);
 
         if let Some((url, title, domain, vc, lvt)) = url_details.remove(&id) {
+            // Recency score (half-life decay over 30 days)
+            let days_ago = ((now_ms - lvt).max(0) as f64) / (86400.0 * 1000.0);
+            let recency_bonus = 0.002 / (1.0 + days_ago / 30.0);
+
+            // Frequency score (log scale)
+            let freq_bonus = ((1.0 + vc as f64).log10() * 0.001).min(0.003);
+
+            // Favorite weight boost
+            let fav_bonus = if fav_set.contains(&id) { 0.004 } else { 0.0 };
+
+            let composite_score = base_rrf + recency_bonus + freq_bonus + fav_bonus;
+
             results.push(HybridSearchResult {
                 url_id: id,
                 url,
@@ -3235,7 +3115,7 @@ pub fn hybrid_search_history(
                 fts_rank: fts_r,
                 vec_rank: vec_r,
                 similarity_score: (sim * 1000.0).round() / 1000.0,
-                rrf_score: (rrf * 10000.0).round() / 10000.0,
+                rrf_score: (composite_score * 10000.0).round() / 10000.0,
             });
         }
     }

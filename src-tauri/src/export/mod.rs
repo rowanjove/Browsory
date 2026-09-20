@@ -165,18 +165,13 @@ fn fetch_records_for_export(
 
     // Exclude Hidden privacy rules from export (Fail-closed)
     let rules = crate::database::repository::get_active_privacy_rules(conn)?;
-    for r in rules.into_iter().filter(|r| r.rule_type == "hidden") {
-        let pat = r.pattern.to_lowercase();
-        if let Some(suffix) = pat.strip_prefix("*.") {
-            conditions.push("NOT (u.domain LIKE ? OR u.domain = ?)".to_string());
-            param_values.push(Box::new(format!("%.{}", suffix)));
-            param_values.push(Box::new(suffix.to_string()));
-        } else {
-            conditions.push("NOT (u.domain LIKE ? OR u.url LIKE ?)".to_string());
-            param_values.push(Box::new(format!("%{}%", pat)));
-            param_values.push(Box::new(format!("%{}%", pat)));
-        }
-    }
+    crate::database::repository::build_hidden_rule_conditions(
+        &rules,
+        "u.domain",
+        "u.url",
+        &mut conditions,
+        &mut param_values,
+    );
 
     let where_clause = if conditions.is_empty() {
         String::new()

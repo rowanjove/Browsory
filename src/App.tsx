@@ -1,18 +1,24 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Sidebar } from './components/Layout/Sidebar';
+import { RecallHomePage } from './pages/Home/RecallHomePage';
 import { HistoryPage } from './pages/History/HistoryPage';
 import { AnalyticsPage } from './pages/Analytics/AnalyticsPage';
 import { SourcesPage } from './pages/Sources/SourcesPage';
 import { AIPage } from './pages/AI/AIPage';
+import { PrivacyPage } from './pages/Privacy/PrivacyPage';
 import { SettingsPage } from './pages/Settings/SettingsPage';
 import { RunningModal } from './components/Layout/RunningModal';
 import { ToastContainer } from './components/Common/Toast';
 import { LockScreen } from './components/Layout/LockScreen';
+import { QuickSearchModal } from './components/QuickSearch/QuickSearchModal';
+import { OnboardingWizard } from './components/Onboarding/OnboardingWizard';
 import { useAppStore } from './stores/useAppStore';
 import { useSecurityStore } from './stores/useSecurityStore';
+import { useHistoryStore } from './stores/useHistoryStore';
 
 export const App: React.FC = () => {
-  const { currentTab, setTheme, setLanguage } = useAppStore();
+  const { currentTab, setCurrentTab, setTheme, setLanguage } = useAppStore();
   const {
     isInitialized,
     isLocked,
@@ -22,8 +28,11 @@ export const App: React.FC = () => {
     lockOnSleep,
     checkSecurityState,
     lock,
+    triggerSyncAll,
   } = useSecurityStore();
 
+  const [isQuickSearchOpen, setIsQuickSearchOpen] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const lastActivityRef = useRef<number>(Date.now());
 
   useEffect(() => {
@@ -35,6 +44,12 @@ export const App: React.FC = () => {
     const savedLang = localStorage.getItem('app_language');
     if (savedLang) {
       setLanguage(savedLang as any);
+    }
+
+    // Check first launch onboarding
+    const hasOnboarded = localStorage.getItem('browsory_onboarded_v1');
+    if (!hasOnboarded) {
+      setShowOnboarding(true);
     }
 
     // 2. Initialize security & check lock status
@@ -80,12 +95,22 @@ export const App: React.FC = () => {
       }
     };
 
-    // Keyboard shortcut Cmd/Ctrl + L
+    // Keyboard shortcut Cmd/Ctrl + L (Lock), Cmd/Ctrl + K (Quick Search), Ctrl + Shift + Space (Spotlight)
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
         e.preventDefault();
         if (pinEnabled) {
           lock();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        if (!isLocked) {
+          setIsQuickSearchOpen((prev) => !prev);
+        }
+      } else if (e.ctrlKey && e.shiftKey && (e.code === 'Space' || e.key === ' ')) {
+        e.preventDefault();
+        if (!isLocked) {
+          setIsQuickSearchOpen((prev) => !prev);
         }
       }
     };
@@ -99,7 +124,7 @@ export const App: React.FC = () => {
       window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('keydown', handleGlobalKeyDown);
     };
-  }, [pinEnabled, lockOnMinimize, lock]);
+  }, [pinEnabled, lockOnMinimize, isLocked, lock]);
 
   // 5. System Sleep / Wake Heartbeat Detection
   useEffect(() => {
@@ -121,6 +146,48 @@ export const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [pinEnabled, lockOnSleep, isLocked, lock]);
 
+  // 6. Listen to Tauri Tray & Window events
+  useEffect(() => {
+    const handleOpenQuickSearch = () => {
+      if (!isLocked) {
+        setIsQuickSearchOpen(true);
+      }
+    };
+
+    window.addEventListener('browsory:open-quick-search', handleOpenQuickSearch);
+
+    let unlistenSearch: (() => void) | undefined;
+    let unlistenSync: (() => void) | undefined;
+    let unlistenLock: (() => void) | undefined;
+
+    listen('browsory://open-quick-search', () => {
+      handleOpenQuickSearch();
+    }).then((un) => {
+      unlistenSearch = un;
+    });
+
+    listen('browsory://sync-now', () => {
+      triggerSyncAll();
+    }).then((un) => {
+      unlistenSync = un;
+    });
+
+    listen('browsory://lock', () => {
+      if (pinEnabled) {
+        lock();
+      }
+    }).then((un) => {
+      unlistenLock = un;
+    });
+
+    return () => {
+      window.removeEventListener('browsory:open-quick-search', handleOpenQuickSearch);
+      if (unlistenSearch) unlistenSearch();
+      if (unlistenSync) unlistenSync();
+      if (unlistenLock) unlistenLock();
+    };
+  }, [isLocked, pinEnabled, lock, triggerSyncAll]);
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
       <Sidebar />
@@ -138,10 +205,12 @@ export const App: React.FC = () => {
           </div>
         ) : (
           <>
+            {currentTab === 'home' && <RecallHomePage />}
             {currentTab === 'history' && <HistoryPage />}
             {currentTab === 'analytics' && <AnalyticsPage />}
             {currentTab === 'sources' && <SourcesPage />}
             {currentTab === 'ai' && <AIPage />}
+            {currentTab === 'privacy' && <PrivacyPage />}
             {currentTab === 'settings' && <SettingsPage />}
           </>
         )}
@@ -151,6 +220,18 @@ export const App: React.FC = () => {
       {isLocked && isInitialized && <LockScreen />}
 
       {/* Global Modals & Notifications */}
+      <OnboardingWizard
+        isOpen={showOnboarding && !isLocked}
+        onComplete={() => setShowOnboarding(false)}
+      />
+      <QuickSearchModal
+        isOpen={isQuickSearchOpen && !isLocked}
+        onClose={() => setIsQuickSearchOpen(false)}
+        onOpenInApp={(item) => {
+          setCurrentTab('history');
+          useHistoryStore.getState().openDetail(item.id);
+        }}
+      />
       <RunningModal />
       <ToastContainer />
     </div>

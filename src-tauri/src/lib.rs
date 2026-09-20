@@ -1,12 +1,24 @@
 pub mod ai;
+pub mod archive;
 pub mod browser;
 pub mod commands;
 pub mod database;
+pub mod diagnostics;
 pub mod error;
 pub mod export;
 pub mod history;
+pub mod license;
+pub mod logging;
 pub mod process;
 pub mod security;
+pub mod sync;
+pub mod tray;
+
+use commands::archive::{
+    cancel_background_job, delete_offline_archive, get_offline_archive, list_background_jobs,
+    list_offline_archives, save_offline_archive,
+};
+use commands::license::{activate_license, deactivate_license, get_license_info};
 
 use commands::ai::{
     generate_ai_period_comparison, generate_embeddings_batch, get_all_topics, get_embedding_status,
@@ -16,6 +28,7 @@ use commands::browser::{
     check_browser_running, import_history_batch, import_history_file, kill_browser,
     open_path_in_folder, scan_browsers, toggle_source_enabled,
 };
+use commands::diagnostics::{export_diagnostics_bundle, get_diagnostics_info};
 use commands::history::{
     add_tag_to_url, ask_web_memory, check_link_health, create_smart_collection,
     delete_smart_collection, delete_visits, export_history, get_analytics, get_domain_detail,
@@ -31,25 +44,32 @@ use commands::security::{
 };
 use commands::settings::{
     call_ai_completion, get_app_info, get_setting, set_setting, test_ai_connection,
+    test_embedding_connection,
 };
-use commands::sync::{get_recent_import_jobs, sync_all, sync_source};
+use commands::storage::{clean_storage_cache, get_storage_breakdown};
+use commands::sync::{
+    execute_webdav_sync, get_recent_import_jobs, sync_all, sync_source, test_webdav_sync,
+};
 use database::init_database;
-use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .try_init();
+    // 0. Initialize app directories and rolling logging
+    let (_app_dir, _, logs_dir, _) = match database::connection::get_app_directories() {
+        Ok(dirs) => dirs,
+        Err(e) => {
+            eprintln!("Failed to initialize app directories: {}", e);
+            return;
+        }
+    };
+    let _log_guard = logging::setup_logging(&logs_dir);
 
     // 1. Permanently bypass Windows system proxy (Clash, VPN, etc.) for loopback and tauri internal protocols
     #[cfg(target_os = "windows")]
     {
         let existing = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
         let bypass_rule =
-            "--proxy-bypass-list=<-loopback>;localhost;127.0.0.1;*.localhost;tauri.localhost";
+            "--proxy-bypass-list=<loopback>;<local>;localhost;127.0.0.1;*.localhost;tauri.localhost";
         let new_args = if existing.is_empty() {
             bypass_rule.to_string()
         } else if !existing.contains("--proxy-bypass-list") {
@@ -94,9 +114,30 @@ pub fn run() {
         }
     }
 
+    // Milestone D: Run automated database backup check in background
+    let db_backup_state = db_state.clone();
+    std::thread::spawn(move || {
+        // Wait 4 seconds for UI startup and initial read-locks to settle
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        commands::security::check_and_run_auto_backup(&db_backup_state);
+    });
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // Setup system tray
+            if let Err(e) = tray::setup_tray(app.handle()) {
+                tracing::warn!("Failed to setup system tray: {}", e);
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
         .manage(db_state)
         .invoke_handler(tauri::generate_handler![
             scan_browsers,
@@ -161,6 +202,22 @@ pub fn run() {
             import_takeout_file,
             check_link_health,
             get_link_health,
+            test_embedding_connection,
+            get_diagnostics_info,
+            export_diagnostics_bundle,
+            get_storage_breakdown,
+            clean_storage_cache,
+            save_offline_archive,
+            get_offline_archive,
+            list_offline_archives,
+            delete_offline_archive,
+            list_background_jobs,
+            cancel_background_job,
+            activate_license,
+            get_license_info,
+            deactivate_license,
+            test_webdav_sync,
+            execute_webdav_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

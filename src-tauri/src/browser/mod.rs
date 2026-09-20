@@ -1,9 +1,12 @@
+pub mod arc;
 pub mod brave;
 pub mod chrome;
 pub mod chromium;
 pub mod edge;
 pub mod firefox;
+pub mod opera;
 pub mod vivaldi;
+pub mod zen;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -37,7 +40,10 @@ pub fn get_all_adapters() -> Vec<Box<dyn BrowserAdapter>> {
         Box::new(edge::EdgeAdapter),
         Box::new(brave::BraveAdapter),
         Box::new(vivaldi::VivaldiAdapter),
+        Box::new(opera::OperaAdapter),
+        Box::new(arc::ArcAdapter),
         Box::new(firefox::FirefoxAdapter),
+        Box::new(zen::ZenAdapter),
     ]
 }
 

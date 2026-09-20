@@ -1,9 +1,11 @@
 {
   "nav": {
+    "home": "Memory Home",
     "history": "History",
     "analytics": "Analytics",
     "sources": "Sources",
     "ai": "AI Assistant",
+    "privacy": "Privacy & Security",
     "settings": "Settings"
   },
   "history": {

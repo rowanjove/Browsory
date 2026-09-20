@@ -110,7 +110,7 @@ export interface AppInfo {
   logs_dir: string;
 }
 
-export type NavTab = 'history' | 'analytics' | 'sources' | 'ai' | 'settings';
+export type NavTab = 'home' | 'history' | 'analytics' | 'sources' | 'ai' | 'privacy' | 'settings';
 
 export interface DomainStat {
   domain: string;
@@ -218,6 +218,12 @@ export interface ExportOptions {
 
 export interface TestAiPayload {
   base_url: string;
+  api_key?: string;
+  model: string;
+}
+
+export interface TestEmbeddingPayload {
+  base_url?: string;
   api_key?: string;
   model: string;
 }
@@ -467,7 +473,148 @@ export interface LinkHealthStatus {
   wayback_url: string;
 }
 
+export interface SourceDiagnostic {
+  id: number;
+  browser: string;
+  profile: string;
+  source_type: string;
+  enabled: boolean;
+  last_visit_time: number;
+  last_sync_at: number | null;
+}
 
+export interface DiagnosticsInfo {
+  app_version: string;
+  os_name: string;
+  os_version: string;
+  arch: string;
+  total_memory_mb: number;
+  db_path: string;
+  db_size_bytes: number;
+  db_schema_version: number;
+  total_visits: number;
+  total_urls: number;
+  total_sources: number;
+  integrity_status: string;
+  fts_status: string;
+  sources: SourceDiagnostic[];
+}
 
+export interface StorageBreakdown {
+  database_bytes: number;
+  wal_bytes: number;
+  backups_bytes: number;
+  backups_count: number;
+  logs_bytes: number;
+  temp_bytes: number;
+  total_bytes: number;
+}
+
+export interface StorageCleanResult {
+  bytes_freed: number;
+  temp_files_deleted: number;
+  old_logs_deleted: number;
+}
+
+export interface OnThisDayItem {
+  id: number;
+  url: string;
+  title: string;
+  domain: string;
+  visit_time: number;
+  years_ago: number;
+}
+
+export interface OnThisDayResult {
+  items: OnThisDayItem[];
+  total_count: number;
+  available_years: number[];
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface PageArchiveSummary {
+  id: number;
+  url_id: number;
+  page_uuid: string;
+  url: string;
+  title: string;
+  domain: string;
+  archive_level: string;
+  relative_path: string;
+  has_markdown: boolean;
+  has_snapshot_html: boolean;
+  has_screenshot: boolean;
+  size_bytes: number;
+  archived_at: number;
+}
+
+export interface PageArchiveDetail {
+  summary: PageArchiveSummary;
+  markdown_content?: string | null;
+  snapshot_html?: string | null;
+}
+
+export interface SaveArchivePayload {
+  url_id: number;
+  archive_level: string;
+  markdown?: string;
+  html?: string;
+  title?: string;
+  author?: string;
+}
+
+export interface BackgroundJob {
+  id: string;
+  job_type: string;
+  title: string;
+  status: string;
+  progress_current: number;
+  progress_total: number;
+  message?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+// Milestone H: E2EE Multi-Device Sync
+export interface WebDavConfig {
+  enabled: boolean;
+  server_url: string;
+  username: string;
+  password: string;
+  remote_dir: string;
+}
+
+export interface SyncStatusReport {
+  success: boolean;
+  uploaded_items: number;
+  downloaded_items: number;
+  message: string;
+  timestamp: number;
+}
+
+// Milestone I & J: License & Commercial Pro
+export interface LicenseCertificate {
+  license_id: string;
+  licensee_name: string;
+  licensee_email?: string | null;
+  plan: string;
+  issued_at: number;
+  expires_at?: number | null;
+  device_limit: number;
+  features: string[];
+}
+
+export interface LicenseInfo {
+  is_pro: boolean;
+  plan: string;
+  licensee_name?: string | null;
+  licensee_email?: string | null;
+  expires_at?: number | null;
+  is_expired: boolean;
+  device_limit: number;
+  features: string[];
+}
 
 

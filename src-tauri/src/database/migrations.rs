@@ -273,6 +273,88 @@ const MIGRATIONS: &[Migration] = &[
         CREATE INDEX IF NOT EXISTS idx_visits_url_id ON visits(url_id);
         "#,
     },
+    Migration {
+        version: 10,
+        description: "Add page_contents and page_contents_fts for full-text article archive",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS page_contents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url_id INTEGER NOT NULL REFERENCES urls(id) ON DELETE CASCADE,
+            title TEXT,
+            author TEXT,
+            description TEXT,
+            markdown TEXT,
+            plain_text TEXT NOT NULL,
+            word_count INTEGER DEFAULT 0,
+            extracted_at INTEGER NOT NULL,
+            UNIQUE(url_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_page_contents_url ON page_contents(url_id);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS page_contents_fts USING fts5(
+            title,
+            author,
+            description,
+            plain_text,
+            content='page_contents',
+            content_rowid='id'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS page_contents_ai AFTER INSERT ON page_contents BEGIN
+            INSERT INTO page_contents_fts(rowid, title, author, description, plain_text)
+            VALUES (new.id, new.title, new.author, new.description, new.plain_text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS page_contents_ad AFTER DELETE ON page_contents BEGIN
+            INSERT INTO page_contents_fts(page_contents_fts, rowid, title, author, description, plain_text)
+            VALUES ('delete', old.id, old.title, old.author, old.description, old.plain_text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS page_contents_au AFTER UPDATE ON page_contents BEGIN
+            INSERT INTO page_contents_fts(page_contents_fts, rowid, title, author, description, plain_text)
+            VALUES ('delete', old.id, old.title, old.author, old.description, old.plain_text);
+            INSERT INTO page_contents_fts(rowid, title, author, description, plain_text)
+            VALUES (new.id, new.title, new.author, new.description, new.plain_text);
+        END;
+        "#,
+    },
+    Migration {
+        version: 11,
+        description:
+            "Add offline_archives and background_jobs tables for Milestone G offline archive",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS offline_archives (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url_id INTEGER NOT NULL REFERENCES urls(id) ON DELETE CASCADE,
+            page_uuid TEXT NOT NULL UNIQUE,
+            archive_level TEXT NOT NULL DEFAULT 'content',
+            relative_path TEXT NOT NULL,
+            title TEXT,
+            domain TEXT,
+            has_markdown INTEGER NOT NULL DEFAULT 0,
+            has_snapshot_html INTEGER NOT NULL DEFAULT 0,
+            has_screenshot INTEGER NOT NULL DEFAULT 0,
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            archived_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_offline_archives_url ON offline_archives(url_id);
+        CREATE INDEX IF NOT EXISTS idx_offline_archives_uuid ON offline_archives(page_uuid);
+        CREATE INDEX IF NOT EXISTS idx_offline_archives_time ON offline_archives(archived_at DESC);
+
+        CREATE TABLE IF NOT EXISTS background_jobs (
+            id TEXT PRIMARY KEY,
+            job_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            progress_current INTEGER NOT NULL DEFAULT 0,
+            progress_total INTEGER NOT NULL DEFAULT 0,
+            message TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_background_jobs_status ON background_jobs(status, updated_at DESC);
+        "#,
+    },
 ];
 
 pub fn run_migrations(conn: &mut Connection) -> AppResult<()> {

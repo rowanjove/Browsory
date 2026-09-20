@@ -184,7 +184,8 @@ fn validate_snapshot_integrity(db_path: &Path) -> bool {
 
     match conn_res {
         Ok(conn) => {
-            let check: Result<String, _> = conn.query_row("PRAGMA quick_check", [], |r| r.get(0));
+            let check: Result<String, _> =
+                conn.query_row("PRAGMA quick_check(1)", [], |r| r.get(0));
             check.map(|res| res == "ok").unwrap_or(false)
         }
         Err(e) => {

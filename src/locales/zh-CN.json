@@ -1,9 +1,11 @@
 {
   "nav": {
-    "history": "历史",
-    "analytics": "分析",
+    "home": "记忆中心",
+    "history": "浏览足迹",
+    "analytics": "数据洞察",
     "sources": "数据源",
     "ai": "AI 助手",
+    "privacy": "隐私与安全",
     "settings": "设置"
   },
   "history": {

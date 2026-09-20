@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { tauriApi } from '../services/tauri';
 import { SecurityState } from '../types';
+import { useHistoryStore } from './useHistoryStore';
 
 const isScreenshotPreview =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('preview');
@@ -155,8 +156,15 @@ export const useSecurityStore = create<SecurityStore>((set, get) => ({
   triggerFirstUnlockSyncIfNeeded: async () => {
     if (get().hasSyncedAfterStart) return;
     set({ hasSyncedAfterStart: true });
-    console.info('[AutoSync] Triggering first-unlock auto-sync after process start...');
-    await get().triggerSyncAll();
+    console.info('[AutoSync] Triggering first-unlock auto-sync with smooth deferral...');
+    // Defer 1200ms to allow immediate first-screen render and zero IPC contention
+    setTimeout(() => {
+      get()
+        .triggerSyncAll()
+        .catch((e) => {
+          console.error('[AutoSync] Background initial sync failed:', e);
+        });
+    }, 1200);
   },
 
   triggerSyncAll: async () => {
@@ -170,6 +178,13 @@ export const useSecurityStore = create<SecurityStore>((set, get) => ({
         lastSyncTime: Date.now(),
         lastSyncCount: totalNew,
       });
+
+      if (totalNew > 0 || useHistoryStore.getState().items.length === 0) {
+        useHistoryStore.getState().fetchHistory(true).catch((err) => {
+          console.error('[AutoSync] Silent refresh history failed:', err);
+        });
+      }
+
       return totalNew;
     } catch (e) {
       console.error('[AutoSync] Sync failed:', e);

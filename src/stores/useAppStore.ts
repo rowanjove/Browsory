@@ -24,12 +24,15 @@ interface AppStore {
   theme: Theme;
   runningModal: RunningModalState;
   toasts: ToastMessage[];
+  isChangelogOpen: boolean;
 
   setCurrentTab: (tab: NavTab) => void;
   setLanguage: (lang: Language) => void;
   setTheme: (theme: Theme) => void;
   openRunningModal: (browser: string, sourceId?: number) => void;
   closeRunningModal: () => void;
+  openChangelog: () => void;
+  closeChangelog: () => void;
   showToast: (content: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
   removeToast: (id: string) => void;
   t: (keyPath: string, params?: Record<string, string | number>) => string;
@@ -44,9 +47,9 @@ const previewParams = typeof window !== 'undefined' ? new URLSearchParams(window
 const previewLanguage: Language = previewParams?.get('lang') === 'en-US' ? 'en-US' : 'zh-CN';
 const previewTab = previewParams?.get('tab');
 const initialTab: NavTab =
-  previewTab === 'analytics' || previewTab === 'sources' || previewTab === 'ai' || previewTab === 'settings'
-    ? previewTab
-    : 'history';
+  previewTab === 'history' || previewTab === 'analytics' || previewTab === 'sources' || previewTab === 'ai' || previewTab === 'settings'
+    ? (previewTab as NavTab)
+    : 'home';
 
 export const useAppStore = create<AppStore>((set, get) => ({
   currentTab: initialTab,
@@ -57,6 +60,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     browser: '',
   },
   toasts: [],
+  isChangelogOpen: false,
 
   setCurrentTab: (tab) => set({ currentTab: tab }),
 
@@ -87,6 +91,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         browser: '',
       },
     }),
+
+  openChangelog: () => set({ isChangelogOpen: true }),
+  closeChangelog: () => set({ isChangelogOpen: false }),
 
   showToast: (content, type = 'info') => {
     const id = Math.random().toString(36).substring(2, 9);

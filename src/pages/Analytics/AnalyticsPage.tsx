@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Globe,
   Clock,
@@ -177,8 +177,16 @@ export const AnalyticsPage: React.FC = () => {
     setCurrentTab('history');
   };
 
+  const trendScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (trendScrollRef.current && (data?.daily_trend.length ?? 0) > 40) {
+      trendScrollRef.current.scrollLeft = trendScrollRef.current.scrollWidth;
+    }
+  }, [data?.daily_trend]);
+
   // Calculations for charts
-  const maxDailyCount = Math.max(...(data?.daily_trend.map((d) => d.count) || [1]), 1);
+  const maxDailyCount = data?.daily_trend?.reduce((max, d) => Math.max(max, d.count), 1) ?? 1;
   const maxHourlyCount = Math.max(...(data?.hourly_distribution.map((h) => h.count) || [1]), 1);
   const maxHeatmapCount = Math.max(...(data?.weekly_heatmap.map((p) => p.count) || [1]), 1);
 
@@ -224,7 +232,7 @@ export const AnalyticsPage: React.FC = () => {
                 }`}
               >
                 <BarChart3 className="w-3.5 h-3.5" />
-                <span>全维洞察</span>
+                <span>概览统计</span>
               </button>
               <button
                 onClick={() => setActiveView('interests')}
@@ -235,7 +243,7 @@ export const AnalyticsPage: React.FC = () => {
                 }`}
               >
                 <Brain className="w-3.5 h-3.5" />
-                <span>知识图谱与演化</span>
+                <span>兴趣演化</span>
               </button>
               <button
                 onClick={() => setActiveView('sessions')}
@@ -246,7 +254,7 @@ export const AnalyticsPage: React.FC = () => {
                 }`}
               >
                 <Layers className="w-3.5 h-3.5" />
-                <span>研究会话流</span>
+                <span>研究会话</span>
               </button>
               <button
                 onClick={() => setActiveView('on_this_day')}
@@ -257,12 +265,12 @@ export const AnalyticsPage: React.FC = () => {
                 }`}
               >
                 <Calendar className="w-3.5 h-3.5" />
-                <span>历史上的今天</span>
+                <span>那年今日</span>
               </button>
             </div>
           </div>
           <p className="text-slate-500">
-            Local-First 本地隐私安全聚合 · 当前区间归档 {data?.total_visits.toLocaleString() ?? '...'} 次访问
+            本地统计 · 当前区间累计 {data?.total_visits.toLocaleString() ?? '...'} 次访问
           </p>
         </div>
 
@@ -300,7 +308,7 @@ export const AnalyticsPage: React.FC = () => {
       {isLoading && !data ? (
         <div className="flex-1 flex items-center justify-center py-24 text-slate-400 gap-2">
           <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-          <span>正在聚合全维历史数据...</span>
+          <span>正在加载统计数据...</span>
         </div>
       ) : activeView === 'overview' ? (
         <div className="flex flex-col gap-5 mt-5">
@@ -400,16 +408,16 @@ export const AnalyticsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* 2. Deep Website Analysis & Ranking (网站深度排行 Top 20/50/100) */}
+          {/* 2. Deep Website Analysis & Ranking (网站访问排行 Top 20/50/100) */}
           <div className="bg-white dark:bg-slate-800 p-4 rounded border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col gap-3">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-700">
               <div className="flex items-center gap-2">
                 <Globe className="w-4 h-4 text-blue-500" />
                 <span className="font-semibold text-slate-800 dark:text-slate-100">
-                  网站深度排行榜 (Website Ranking)
+                  网站访问排行
                 </span>
                 <span className="text-slate-400 text-[11px]">
-                  · 支持点击任意站点下钻路径树 (URL Path Tree) 与小时分布
+                  · 支持点击站点查看路径结构与时段分布
                 </span>
               </div>
 
@@ -506,7 +514,7 @@ export const AnalyticsPage: React.FC = () => {
                                 onClick={() => setSelectedDomain(item.domain)}
                                 className="px-2 py-1 rounded bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900 text-blue-600 dark:text-blue-400 text-[10px] font-medium transition"
                               >
-                                下钻深度
+                                查看详情
                               </button>
                               <button
                                 onClick={() => handleSearchClick(item.domain)}
@@ -526,14 +534,14 @@ export const AnalyticsPage: React.FC = () => {
             )}
           </div>
 
-          {/* 4. Domain Dynamics Discovery (新发现 vs 沉寂网站) */}
+          {/* 4. Domain Dynamics Discovery (新增 vs 沉寂网站) */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* New Domains */}
             <div className="bg-white dark:bg-slate-800 p-4 rounded border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col gap-3">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-700">
                 <div className="flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-100">
                   <Sparkles className="w-4 h-4 text-emerald-500" />
-                  <span>新探索发现网站 (New Domains)</span>
+                  <span>近期新增站点</span>
                 </div>
                 <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-mono">
                   {dynamics?.new_domains.length ?? 0} 个站点
@@ -556,7 +564,7 @@ export const AnalyticsPage: React.FC = () => {
                             {nd.domain}
                           </span>
                           <span className="px-1.5 py-0.2 rounded text-[9px] bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-300">
-                            初次探索
+                            首次访问
                           </span>
                         </div>
                         <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
@@ -582,7 +590,7 @@ export const AnalyticsPage: React.FC = () => {
               <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-700">
                 <div className="flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-100">
                   <History className="w-4 h-4 text-slate-400" />
-                  <span>历史高频 · 近期沉寂网站 (Dormant)</span>
+                  <span>高频沉寂站点</span>
                 </div>
                 <span className="text-[11px] text-slate-400 font-mono">
                   {dynamics?.dormant_domains.length ?? 0} 个站点
@@ -621,60 +629,92 @@ export const AnalyticsPage: React.FC = () => {
           </div>
 
           {/* 5. Daily Trend Histogram/Chart */}
-          <div className="bg-white dark:bg-slate-800 p-4 rounded border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col gap-3">
+          <div className="bg-white dark:bg-slate-800 p-4 rounded border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col gap-3 overflow-hidden">
             <div className="flex items-center justify-between font-medium text-slate-800 dark:text-slate-200">
               <div className="flex items-center gap-2">
                 <TrendingUp className="w-4 h-4 text-emerald-500" />
-                <span>每日访问量趋势 (Daily Trend)</span>
+                <span>每日访问趋势</span>
               </div>
-              <span className="text-slate-400 text-[11px] font-mono">
-                {data?.daily_trend.length ?? 0} 天记录
-              </span>
+              <div className="flex items-center gap-2">
+                {data && data.daily_trend.length > 40 && (
+                  <span className="text-[10px] text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-700/60 px-2 py-0.5 rounded-full font-mono">
+                    支持横向滑动浏览
+                  </span>
+                )}
+                <span className="text-slate-400 text-[11px] font-mono">
+                  {data?.daily_trend.length ?? 0} 天记录
+                </span>
+              </div>
             </div>
 
             {!data?.daily_trend || data.daily_trend.length === 0 ? (
               <span className="text-slate-400 py-8 text-center">所选时段暂无访问记录</span>
             ) : (
-              <div className="flex flex-col">
-                <div className="h-32 flex items-end gap-1 px-1 relative">
-                  {data.daily_trend.map((d) => {
-                    const heightPercent = Math.max(Math.round((d.count / maxDailyCount) * 100), 4);
-                    return (
-                      <div
-                        key={d.date}
-                        className="flex-1 min-w-[14px] max-w-[32px] h-full flex items-end justify-center group relative"
-                      >
-                        {/* Tooltip */}
-                        <div className="hidden group-hover:flex absolute bottom-[calc(100%+4px)] left-1/2 -translate-x-1/2 pointer-events-none z-30 bg-slate-900/95 text-white text-[10px] px-2 py-0.5 rounded shadow-lg whitespace-nowrap font-mono">
-                          {d.date}: {d.count} 次
-                        </div>
-                        {/* Bar */}
+              <div
+                ref={trendScrollRef}
+                className="w-full overflow-x-auto history-scrollbar pt-7 pb-1.5"
+              >
+                <div
+                  className="flex flex-col min-w-full"
+                  style={{
+                    width: data.daily_trend.length > 40 ? `${data.daily_trend.length * 16 + 28}px` : '100%',
+                  }}
+                >
+                  <div className="h-32 flex items-end gap-1 pl-2 pr-6 relative">
+                    {data.daily_trend.map((d, i) => {
+                      const heightPercent = Math.max(Math.round((d.count / maxDailyCount) * 100), 4);
+                      const isNearRight = i >= data.daily_trend.length - 2;
+                      const isNearLeft = i < 2;
+                      const tooltipPosClass = isNearRight
+                        ? 'right-0 translate-x-0'
+                        : isNearLeft
+                        ? 'left-0 translate-x-0'
+                        : 'left-1/2 -translate-x-1/2';
+                      return (
                         <div
-                          className="w-full bg-emerald-500 hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-500 rounded-t transition-all cursor-pointer min-h-[4px]"
-                          style={{ height: `${heightPercent}%` }}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-                {/* Dedicated X-axis Date Row */}
-                <div className="h-5 pt-1 border-t border-slate-200 dark:border-slate-700/80 flex items-center gap-1 px-1">
-                  {data.daily_trend.map((d, i) => {
-                    const step = Math.max(Math.floor((data.daily_trend.length || 1) / 8), 1);
-                    const showLabel = i % step === 0 || i === data.daily_trend.length - 1;
-                    return (
-                      <div
-                        key={d.date}
-                        className="flex-1 min-w-[14px] max-w-[32px] text-center overflow-visible"
-                      >
-                        {showLabel && (
-                          <span className="text-[9px] text-slate-400 dark:text-slate-500 font-mono block whitespace-nowrap -ml-2">
-                            {d.date.slice(5)}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
+                          key={d.date}
+                          className="flex-1 min-w-[10px] max-w-[32px] h-full flex items-end justify-center group relative"
+                        >
+                          {/* Tooltip */}
+                          <div
+                            className={`hidden group-hover:flex absolute bottom-[calc(100%+4px)] ${tooltipPosClass} pointer-events-none z-30 bg-slate-900/95 text-white text-[10px] px-2 py-0.5 rounded shadow-lg whitespace-nowrap font-mono`}
+                          >
+                            {d.date}: {d.count} 次
+                          </div>
+                          {/* Bar */}
+                          <div
+                            className="w-full bg-emerald-500 hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-500 rounded-t transition-all cursor-pointer min-h-[4px]"
+                            style={{ height: `${heightPercent}%` }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* Dedicated X-axis Date Row */}
+                  <div className="h-5 pt-1 border-t border-slate-200 dark:border-slate-700/80 flex items-center gap-1 pl-2 pr-6">
+                    {data.daily_trend.map((d, i) => {
+                      const step = data.daily_trend.length > 40
+                        ? 7
+                        : Math.max(Math.floor((data.daily_trend.length || 1) / 8), 1);
+                      const showLabel = i % step === 0 || i === data.daily_trend.length - 1;
+                      return (
+                        <div
+                          key={d.date}
+                          className="flex-1 min-w-[10px] max-w-[32px] text-center overflow-visible"
+                        >
+                          {showLabel && (
+                            <span
+                              className={`text-[9px] text-slate-400 dark:text-slate-500 font-mono block whitespace-nowrap ${
+                                i === data.daily_trend.length - 1 ? '-ml-3' : '-ml-2'
+                              }`}
+                            >
+                              {d.date.length > 5 ? d.date.slice(5) : d.date}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
@@ -685,7 +725,7 @@ export const AnalyticsPage: React.FC = () => {
             <div className="flex items-center justify-between font-medium text-slate-800 dark:text-slate-200">
               <div className="flex items-center gap-2">
                 <Flame className="w-4 h-4 text-orange-500" />
-                <span>7×24 小时生活节奏热力图 (Weekly-Hourly Heatmap)</span>
+                <span>24小时时段访问热力图</span>
               </div>
               <div className="flex items-center gap-1 text-[11px] text-slate-400">
                 <span>低</span>
@@ -746,7 +786,7 @@ export const AnalyticsPage: React.FC = () => {
               <div className="flex items-center justify-between font-medium text-slate-800 dark:text-slate-200">
                 <div className="flex items-center gap-2">
                   <Search className="w-4 h-4 text-blue-500" />
-                  <span>高频搜索关键词 (Search Query TOP 20)</span>
+                  <span>高频搜索词 Top 20</span>
                 </div>
                 <span className="text-[10px] text-slate-400">点击在历史中检索</span>
               </div>
@@ -786,14 +826,14 @@ export const AnalyticsPage: React.FC = () => {
               <div className="flex items-center justify-between font-medium text-slate-800 dark:text-slate-200">
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-amber-500" />
-                  <span>遗忘宝藏发现 (曾经高频 · 逾 30 天未访)</span>
+                  <span>长期未访的高频页面</span>
                 </div>
-                <span className="text-[10px] text-slate-400">重温深度价值</span>
+                <span className="text-[10px] text-slate-400">超过 30 天未再次访问</span>
               </div>
 
               <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto pr-1">
                 {!data?.forgotten_gems || data.forgotten_gems.length === 0 ? (
-                  <span className="text-slate-400 py-6 text-center">暂无遗忘宝藏</span>
+                  <span className="text-slate-400 py-6 text-center">暂无符合条件的页面</span>
                 ) : (
                   data.forgotten_gems.map((gem) => (
                     <div
@@ -899,13 +939,13 @@ export const AnalyticsPage: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2">
-                    <span>AI 认知演化与时段对比洞察</span>
+                    <span>兴趣演化对比</span>
                     <span className="px-2 py-0.5 rounded-full text-[10px] bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-medium">
-                      双周期自适应
+                      环比分析
                     </span>
                   </h3>
                   <p className="text-slate-500 dark:text-slate-400 text-xs mt-0.5">
-                    对比本期与上一周期的浏览偏好与主题迁移，深度解读个人关注重心的升降演进
+                    对比当前周期与上一周期的浏览主题变化，分析关注重心的迁移情况
                   </p>
                 </div>
               </div>
@@ -920,7 +960,7 @@ export const AnalyticsPage: React.FC = () => {
                 ) : (
                   <Sparkles className="w-4 h-4" />
                 )}
-                <span>{isGeneratingReport ? 'AI 正在深度比对演化...' : '生成本期演化洞察报告'}</span>
+                <span>{isGeneratingReport ? '正在生成对比分析...' : '生成演化对比分析'}</span>
               </button>
             </div>
 
@@ -962,7 +1002,7 @@ export const AnalyticsPage: React.FC = () => {
                   <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-700/60">
                     <div className="flex items-center gap-2 font-semibold text-emerald-600 dark:text-emerald-400">
                       <TrendingUp className="w-4 h-4" />
-                      <span>兴趣激增 (Rising)</span>
+                      <span>关注上升</span>
                     </div>
                     <span className="text-[11px] font-mono text-emerald-600/80 dark:text-emerald-400/80 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded-full">
                       {evolution?.rising_topics.length || 0} 个主题
@@ -1000,7 +1040,7 @@ export const AnalyticsPage: React.FC = () => {
                   <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-700/60">
                     <div className="flex items-center gap-2 font-semibold text-blue-600 dark:text-blue-400">
                       <Sparkles className="w-4 h-4" />
-                      <span>新兴探索 (New)</span>
+                      <span>新增主题</span>
                     </div>
                     <span className="text-[11px] font-mono text-blue-600/80 dark:text-blue-400/80 bg-blue-50 dark:bg-blue-950/50 px-2 py-0.5 rounded-full">
                       {evolution?.new_topics.length || 0} 个主题
@@ -1036,7 +1076,7 @@ export const AnalyticsPage: React.FC = () => {
                   <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-700/60">
                     <div className="flex items-center gap-2 font-semibold text-slate-500 dark:text-slate-400">
                       <TrendingDown className="w-4 h-4" />
-                      <span>关注降温 (Declining)</span>
+                      <span>关注下降</span>
                     </div>
                     <span className="text-[11px] font-mono text-slate-500 bg-slate-100 dark:bg-slate-700 px-2 py-0.5 rounded-full">
                       {evolution?.declining_topics.length || 0} 个主题
@@ -1075,11 +1115,11 @@ export const AnalyticsPage: React.FC = () => {
                 <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-700">
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-slate-800 dark:text-slate-100">
-                      全域主题分类谱系与活跃量 ({topics.length} 个类别)
+                      主题分类统计 ({topics.length} 个类别)
                     </span>
                   </div>
                   <span className="text-slate-400 text-[11px]">
-                    根据规则体系与关键词自动对历史页面进行归类
+                    根据规则与关键词对历史页面自动归类
                   </span>
                 </div>
 
@@ -1114,14 +1154,14 @@ export const AnalyticsPage: React.FC = () => {
         <div className="flex flex-col gap-3 mt-5">
           <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
             <span className="text-slate-500 text-xs">
-              基于 30 分钟无活动自动切分的连续研究探索流 (共聚类 {sessions.length} 个会话)
+              按 30 分钟无操作切分的连续浏览会话 (共 {sessions.length} 个会话)
             </span>
           </div>
 
           {isLoadingSessions ? (
             <div className="py-24 flex items-center justify-center text-slate-400 gap-2">
               <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-              <span>正在切分与聚合研究会话...</span>
+              <span>正在聚类研究会话...</span>
             </div>
           ) : sessions.length === 0 ? (
             <div className="py-20 text-center text-slate-400 text-xs">当前时段暂无聚类会话</div>
@@ -1177,19 +1217,19 @@ export const AnalyticsPage: React.FC = () => {
               </div>
               <div>
                 <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-sm flex items-center gap-2">
-                  <span>往年今日的回忆足迹</span>
+                  <span>历史上的今天</span>
                   <span className="px-2 py-0.5 rounded-full text-[10px] bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-medium font-mono">
-                    {onThisDayResult?.total_count ?? 0} 条时光记忆
+                    {onThisDayResult?.total_count ?? 0} 条记录
                   </span>
                 </h3>
                 <p className="text-slate-500 dark:text-slate-400 text-xs mt-0.5">
-                  重温过去历年在同一天浏览过的内容，寻找往昔专注的思维轨迹与灵感
+                  查看往年在这一天浏览过的内容
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-slate-500 text-xs">回忆日期:</span>
+              <span className="text-slate-500 text-xs">选择日期:</span>
               <input
                 type="date"
                 value={onThisDayDate}
@@ -1264,13 +1304,13 @@ export const AnalyticsPage: React.FC = () => {
           {isLoadingOnThisDay ? (
             <div className="py-24 flex items-center justify-center text-slate-400 gap-2">
               <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-              <span>正在寻回往昔记忆...</span>
+              <span>正在加载历史记录...</span>
             </div>
           ) : !onThisDayResult || onThisDayResult.items.length === 0 ? (
             <div className="bg-white dark:bg-slate-800 p-12 rounded-xl border border-slate-200 dark:border-slate-700 text-center flex flex-col items-center justify-center gap-2">
               <History className="w-8 h-8 text-slate-300 dark:text-slate-600" />
               <p className="text-slate-500 dark:text-slate-400 text-xs">
-                在所选日期的往年中暂无归档浏览记录
+                在所选日期的往年中暂无浏览记录
               </p>
               <span className="text-slate-400 text-[11px]">
                 尝试切换其他日期或导入更早的浏览器历史归档
@@ -1315,8 +1355,10 @@ export const AnalyticsPage: React.FC = () => {
 
                     <a
                       href={item.url}
-                      target="_blank"
-                      rel="noreferrer"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        tauriApi.openExternalUrl(item.url);
+                      }}
                       className="font-semibold text-slate-800 dark:text-slate-100 text-xs line-clamp-2 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
                     >
                       {item.title || item.url}
@@ -1341,7 +1383,7 @@ export const AnalyticsPage: React.FC = () => {
               {onThisDayResult.total_count > 0 && (
                 <div className="flex items-center justify-between bg-white dark:bg-slate-800 p-3 rounded-xl border border-slate-200 dark:border-slate-700 shadow-xs text-xs mt-2">
                   <span className="text-slate-500 font-mono text-[11px]">
-                    共 {onThisDayResult.total_count} 条往昔足迹 · 每页 30 条
+                    共 {onThisDayResult.total_count} 条记录 · 每页 30 条
                   </span>
                   <div className="flex items-center gap-2">
                     <button

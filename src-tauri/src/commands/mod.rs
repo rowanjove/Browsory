@@ -1,6 +1,10 @@
 pub mod ai;
+pub mod archive;
 pub mod browser;
+pub mod diagnostics;
 pub mod history;
+pub mod license;
 pub mod security;
 pub mod settings;
+pub mod storage;
 pub mod sync;
