@@ -140,8 +140,8 @@ pub async fn generate_embeddings_batch(
 
     let records: Vec<(i64, String, Vec<f32>, &str)> = unindexed
         .into_iter()
-        .zip(texts.into_iter())
-        .zip(embeddings.into_iter())
+        .zip(texts)
+        .zip(embeddings)
         .map(|(((url_id, _, _, _), sample), emb)| (url_id, sample, emb, emb_model.as_str()))
         .collect();
 

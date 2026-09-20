@@ -1290,7 +1290,7 @@ fn get_research_sessions_filtered(
 
     let flush_session = |s: ActiveSession, out: &mut Vec<ResearchSession>| {
         let mut dom_vec: Vec<_> = s.domain_counts.into_iter().collect();
-        dom_vec.sort_by(|a, b| b.1.cmp(&a.1));
+        dom_vec.sort_by_key(|a| std::cmp::Reverse(a.1));
         let dominant_domain = dom_vec.first().map(|(d, _)| d.clone()).unwrap_or_default();
         let duration_secs = ((s.end_time - s.start_time) / 1000).max(0);
         let sample_title = if s.first_title.trim().is_empty() {
@@ -1366,7 +1366,7 @@ fn get_research_sessions_filtered(
         flush_session(last_s, &mut sessions);
     }
 
-    sessions.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+    sessions.sort_by_key(|a| std::cmp::Reverse(a.start_time));
     if limit > 0 && sessions.len() > limit as usize {
         sessions.truncate(limit as usize);
     }
@@ -2176,7 +2176,7 @@ fn build_path_tree(urls_with_counts: Vec<(String, u64)>) -> Vec<PathTreeNode> {
 
     fn convert(node: InternalNode) -> PathTreeNode {
         let mut children: Vec<PathTreeNode> = node.children.into_values().map(convert).collect();
-        children.sort_by(|a, b| b.visits.cmp(&a.visits));
+        children.sort_by_key(|a| std::cmp::Reverse(a.visits));
         PathTreeNode {
             name: node.name,
             full_path: node.full_path,
@@ -2187,7 +2187,7 @@ fn build_path_tree(urls_with_counts: Vec<(String, u64)>) -> Vec<PathTreeNode> {
     }
 
     let mut result: Vec<PathTreeNode> = root_children.into_values().map(convert).collect();
-    result.sort_by(|a, b| b.visits.cmp(&a.visits));
+    result.sort_by_key(|a| std::cmp::Reverse(a.visits));
     result
 }
 
