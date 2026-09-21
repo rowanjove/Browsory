@@ -177,10 +177,7 @@ pub fn require_pro(app_dir: &Path, feature: &str) -> AppResult<()> {
     {
         return Ok(());
     }
-    Err(AppError::Other(format!(
-        "当前授权未包含功能：{}",
-        feature
-    )))
+    Err(AppError::Other(format!("当前授权未包含功能：{}", feature)))
 }
 
 /// 移除本地授权，恢复免费 Core 版

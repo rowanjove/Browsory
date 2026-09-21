@@ -43,8 +43,8 @@ use commands::security::{
     toggle_privacy_rule, update_security_options, vacuum_database, verify_pin, verify_recovery_key,
 };
 use commands::settings::{
-    call_ai_completion, check_for_updates, get_app_info, get_setting, quit_application, set_setting,
-    test_ai_connection, test_embedding_connection,
+    call_ai_completion, check_for_updates, get_app_info, get_setting, quit_application,
+    set_setting, test_ai_connection, test_embedding_connection,
 };
 use commands::storage::{clean_storage_cache, get_storage_breakdown};
 use commands::sync::{
