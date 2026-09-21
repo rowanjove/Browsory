@@ -27,6 +27,8 @@ fn sanitize_webdav_config(value: &str, app_dir: &std::path::Path) -> AppResult<S
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppInfo {
+    pub version: String,
+    pub is_portable: bool,
     pub app_dir: String,
     pub db_path: String,
     pub db_size_bytes: u64,
@@ -34,17 +36,87 @@ pub struct AppInfo {
     pub logs_dir: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateCheckResult {
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub release_url: Option<String>,
+    pub notes: Option<String>,
+    pub update_available: bool,
+}
+
 #[tauri::command]
 pub fn get_app_info(db: State<'_, DbState>) -> AppResult<AppInfo> {
     let db_path = db.app_dir.join("archive.db");
     let db_size_bytes = fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+    let is_portable = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .map(|d| crate::database::connection::is_portable_install(&d))
+        .unwrap_or(false);
 
     Ok(AppInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        is_portable,
         app_dir: db.app_dir.to_string_lossy().to_string(),
         db_path: db_path.to_string_lossy().to_string(),
         db_size_bytes,
         temp_dir: db.temp_dir.to_string_lossy().to_string(),
         logs_dir: db.logs_dir.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn quit_application(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
+pub async fn check_for_updates() -> Result<UpdateCheckResult, String> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .user_agent(format!("Browsory/{}", current_version))
+        .build()
+        .map_err(|e| format!("无法创建更新检查客户端: {}", e))?;
+
+    let resp = client
+        .get("https://api.github.com/repos/rowanjove/browsory/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("无法连接 GitHub 检查更新: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("检查更新失败: HTTP {}", resp.status()));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析更新信息失败: {}", e))?;
+    let tag = json
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim_start_matches('v')
+        .to_string();
+    let html_url = json
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let notes = json
+        .get("body")
+        .and_then(|v| v.as_str())
+        .map(|s| s.chars().take(1200).collect::<String>());
+
+    let update_available = !tag.is_empty() && tag != current_version;
+    Ok(UpdateCheckResult {
+        current_version,
+        latest_version: if tag.is_empty() { None } else { Some(tag) },
+        release_url: html_url,
+        notes,
+        update_available,
     })
 }
 

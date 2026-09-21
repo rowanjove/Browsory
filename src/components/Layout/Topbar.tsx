@@ -175,20 +175,6 @@ export const Topbar: React.FC = () => {
   const handleQuickSync = async () => {
     setIsSyncing(true);
     try {
-      const isChromeRunning = await tauriApi.checkBrowserRunning('chrome');
-      const isEdgeRunning = await tauriApi.checkBrowserRunning('edge');
-
-      if (isChromeRunning) {
-        openRunningModal('Chrome');
-        setIsSyncing(false);
-        return;
-      }
-      if (isEdgeRunning) {
-        openRunningModal('Edge');
-        setIsSyncing(false);
-        return;
-      }
-
       const results = await tauriApi.syncAll();
       const inserted = results.reduce((acc, r) => acc + r.inserted_count, 0);
       const duplicate = results.reduce((acc, r) => acc + r.duplicate_count, 0);
@@ -196,7 +182,11 @@ export const Topbar: React.FC = () => {
       showToast(t('sources.syncSuccess', { inserted, duplicate }), 'success');
       fetchHistory(true);
     } catch (err: any) {
-      showToast(err?.message || '同步失败', 'error');
+      const msg = typeof err === 'string' ? err : err?.message || '同步失败';
+      if (/快照|高频写入|完整性校验/.test(msg)) {
+        openRunningModal('Chrome');
+      }
+      showToast(msg, 'error');
     } finally {
       setIsSyncing(false);
     }

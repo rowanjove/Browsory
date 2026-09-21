@@ -68,11 +68,11 @@
     "syncSuccess": "Sync finished: {{inserted}} added, {{duplicate}} skipped"
   },
   "processModal": {
-    "title": "Browser is Running",
-    "desc": "Detected that {{browser}} is currently active. The history database might be locked while running.",
+    "title": "Snapshot sync did not finish",
+    "desc": "{{browser}} is writing its history database, so the read-only snapshot was inconsistent. You can retry snapshot sync. Closing the browser ends every window of that browser.",
     "cancel": "Cancel",
-    "trySync": "Try Direct Sync",
-    "closeAndSync": "Close Browser & Sync"
+    "trySync": "Retry snapshot sync",
+    "closeAndSync": "Close browser, then sync"
   },
   "settings": {
     "title": "Settings",

@@ -188,8 +188,8 @@ export const SecuritySettingsCard: React.FC = () => {
             </span>
             <span className="text-[11px] text-slate-400">
               {pinEnabled
-                ? '已启用应用访问锁。锁定后前端界面与内存数据彻底卸载保护'
-                : '开启后离开或锁屏需输入数字 PIN 才能访问浏览数据'}
+                ? '已启用界面锁。锁定后主界面卸载；磁盘上的 archive.db 仍为明文 SQLite'
+                : '开启后离开或锁屏需输入数字 PIN 才能看到界面。PIN 不加密数据库'}
             </span>
           </div>
         </div>
@@ -477,13 +477,13 @@ export const SecuritySettingsCard: React.FC = () => {
                   安全恢复密钥 (Recovery Key)
                 </h3>
                 <p className="text-xs text-slate-500">
-                  用于应急解密主密钥与重置 PIN
+                  用于忘记 PIN 时重置应用锁，不会加密历史数据库
                 </p>
               </div>
             </div>
 
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              系统已为您生成基于高熵随机的主密钥恢复凭证。若未来遗忘数字 PIN 码，可在锁屏界面凭此密钥直接找回，历史数据不会丢失。
+              请把这串恢复密钥存到安全的地方。忘记 PIN 时可在锁屏用它重置应用锁。历史记录保存在本机明文数据库中，关闭应用锁或直接打开数据目录仍可读取。
             </p>
 
             <div className="p-3.5 bg-slate-100 dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700/80 font-mono text-xs text-slate-800 dark:text-slate-100 break-all select-all flex items-center justify-between gap-2">

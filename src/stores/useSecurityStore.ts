@@ -20,7 +20,7 @@ interface SecurityStore {
   lastSyncTime: number | null;
   lastSyncCount: number;
 
-  checkSecurityState: () => Promise<void>;
+  checkSecurityState: (options?: { relockIfPinEnabled?: boolean }) => Promise<void>;
   unlock: (pin: string) => Promise<boolean>;
   unlockWithRecoveryKey: (recoveryKey: string) => Promise<boolean>;
   resetPinWithRecoveryKey: (recoveryKey: string, newPin: string) => Promise<void>;
@@ -46,8 +46,9 @@ export const useSecurityStore = create<SecurityStore>((set, get) => ({
   lastSyncTime: null,
   lastSyncCount: 0,
 
-  checkSecurityState: async () => {
+  checkSecurityState: async (options) => {
     if (isScreenshotPreview) return;
+    const relockIfPinEnabled = options?.relockIfPinEnabled !== false;
     try {
       const state: SecurityState = await tauriApi.getSecurityState();
       set({
@@ -58,8 +59,13 @@ export const useSecurityStore = create<SecurityStore>((set, get) => ({
         lockOnSleep: state.lock_on_sleep,
         isLockedOut: state.is_locked_out,
         lockoutRemainingSecs: state.lockout_remaining_secs,
-        // If PIN is not enabled, unlock immediately
-        isLocked: state.pin_enabled,
+        // Startup may lock when PIN is on. After enabling/changing PIN, keep the
+        // current session unlocked so the recovery key can be shown and saved.
+        isLocked: state.pin_enabled
+          ? relockIfPinEnabled
+            ? true
+            : get().isLocked
+          : false,
       });
 
       // If pin is not enabled, auto trigger startup sync once
@@ -122,7 +128,7 @@ export const useSecurityStore = create<SecurityStore>((set, get) => ({
       isLockedOut: false,
       lockoutRemainingSecs: 0,
     });
-    await get().checkSecurityState();
+    await get().checkSecurityState({ relockIfPinEnabled: false });
   },
 
   lock: () => {
@@ -134,14 +140,14 @@ export const useSecurityStore = create<SecurityStore>((set, get) => ({
   setOrChangePin: async (oldPin: string | null, newPin: string) => {
     const recoveryKey = await tauriApi.setOrChangePin(oldPin, newPin);
     set({ pinEnabled: true, isLocked: false });
-    await get().checkSecurityState();
+    await get().checkSecurityState({ relockIfPinEnabled: false });
     return recoveryKey;
   },
 
   disablePin: async (currentPin: string) => {
     await tauriApi.disablePin(currentPin);
     set({ pinEnabled: false, isLocked: false });
-    await get().checkSecurityState();
+    await get().checkSecurityState({ relockIfPinEnabled: false });
   },
 
   updateOptions: async (autoLockMinutes: number, lockOnMinimize: boolean, lockOnSleep: boolean) => {

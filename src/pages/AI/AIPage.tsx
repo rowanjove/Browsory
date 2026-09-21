@@ -111,7 +111,7 @@ export const AIPage: React.FC = () => {
       const results = await tauriApi.hybridSearch(q, 30);
       setHybridResults(results);
     } catch (err: any) {
-      showToast(err?.message || '混合语义检索失败', 'error');
+      showToast(typeof err === 'string' ? err : err?.message || '混合语义检索失败', 'error');
     } finally {
       setIsSearchingHybrid(false);
     }
@@ -124,7 +124,7 @@ export const AIPage: React.FC = () => {
       const pages = await tauriApi.getSimilarPages(urlId);
       setSimilarPages(pages);
     } catch (err: any) {
-      showToast(err?.message || '获取相似页面失败', 'error');
+      showToast(typeof err === 'string' ? err : err?.message || '获取相似页面失败', 'error');
     } finally {
       setIsLoadingSimilar(false);
     }
@@ -137,7 +137,7 @@ export const AIPage: React.FC = () => {
       showToast(`已增量生成并保存 ${count} 个页面的嵌入向量`, 'success');
       await fetchEmbeddingStatus();
     } catch (err: any) {
-      showToast(err?.message || '生成向量索引失败，请检查设置中的 AI 配置', 'error');
+      showToast(typeof err === 'string' ? err : err?.message || '生成向量索引失败，请检查设置中的 AI 配置', 'error');
     } finally {
       setIsIndexing(false);
     }

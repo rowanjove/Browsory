@@ -1,7 +1,7 @@
 use directories::ProjectDirs;
 use rusqlite::Connection;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
@@ -16,11 +16,26 @@ pub struct DbState {
     pub logs_dir: PathBuf,
 }
 
-pub fn get_app_directories() -> AppResult<(PathBuf, PathBuf, PathBuf, PathBuf)> {
+pub fn is_portable_install(exe_dir: &Path) -> bool {
+    exe_dir.join("portable.txt").is_file() || exe_dir.join("portable").is_file()
+}
+
+pub fn resolve_data_directory(exe_dir: Option<&Path>) -> AppResult<PathBuf> {
+    if let Some(dir) = exe_dir {
+        if is_portable_install(dir) {
+            return Ok(dir.join("data"));
+        }
+    }
     let proj_dirs = ProjectDirs::from("com", "browsory", "app")
         .ok_or_else(|| AppError::System("Failed to resolve project directories".into()))?;
+    Ok(proj_dirs.data_local_dir().to_path_buf())
+}
 
-    let data_dir = proj_dirs.data_local_dir().to_path_buf();
+pub fn get_app_directories() -> AppResult<(PathBuf, PathBuf, PathBuf, PathBuf)> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    let data_dir = resolve_data_directory(exe_dir.as_deref())?;
     let temp_dir = data_dir.join("temp");
     let logs_dir = data_dir.join("logs");
     let db_path = data_dir.join("archive.db");
@@ -81,4 +96,40 @@ pub fn init_database() -> AppResult<DbState> {
         temp_dir,
         logs_dir,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_marker_uses_exe_side_data_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "browsory_portable_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("portable.txt"), b"portable").unwrap();
+        let data = resolve_data_directory(Some(&root)).unwrap();
+        assert_eq!(data, root.join("data"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn installed_mode_does_not_use_exe_dir_without_marker() {
+        let root = std::env::temp_dir().join(format!(
+            "browsory_installed_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let data = resolve_data_directory(Some(&root)).unwrap();
+        assert_ne!(data, root.join("data"));
+        let _ = fs::remove_dir_all(&root);
+    }
 }

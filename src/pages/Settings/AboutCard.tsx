@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ShieldCheck,
   ExternalLink,
@@ -6,13 +6,15 @@ import {
   Database,
   Clock,
   Info,
+  RefreshCw,
 } from 'lucide-react';
 import { AppLogo } from '../../components/Common/AppLogo';
 import { tauriApi } from '../../services/tauri';
 import { useAppStore } from '../../stores/useAppStore';
 
 export const AboutCard: React.FC = () => {
-  const { openChangelog } = useAppStore();
+  const { openChangelog, appVersion, showToast } = useAppStore();
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   return (
     <div className="p-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs space-y-5">
@@ -26,7 +28,7 @@ export const AboutCard: React.FC = () => {
                 Browsory 浏览足迹
               </span>
               <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-950/80 dark:text-blue-300 font-semibold border border-blue-200 dark:border-blue-800">
-                v0.1.0
+                v{appVersion}
               </span>
               <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
                 Apache-2.0
@@ -39,6 +41,33 @@ export const AboutCard: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={async () => {
+              setCheckingUpdate(true);
+              try {
+                const result = await tauriApi.checkForUpdates();
+                if (result.update_available && result.latest_version) {
+                  showToast(`发现新版本 ${result.latest_version}，正在打开发布页`, 'success');
+                  if (result.release_url) {
+                    await tauriApi.openExternalUrl(result.release_url);
+                  }
+                } else {
+                  showToast(`当前已是最新版本 v${result.current_version}`, 'info');
+                }
+              } catch (err: any) {
+                showToast(typeof err === 'string' ? err : '检查更新失败', 'error');
+              } finally {
+                setCheckingUpdate(false);
+              }
+            }}
+            disabled={checkingUpdate}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-medium transition cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${checkingUpdate ? 'animate-spin' : ''}`} />
+            <span>{checkingUpdate ? '检查中...' : '检查更新'}</span>
+          </button>
+
           <button
             type="button"
             onClick={openChangelog}

@@ -22,10 +22,13 @@ interface AppStore {
   currentTab: NavTab;
   language: Language;
   theme: Theme;
+  appVersion: string;
+  isPortable: boolean;
   runningModal: RunningModalState;
   toasts: ToastMessage[];
   isChangelogOpen: boolean;
 
+  setAppMeta: (version: string, isPortable: boolean) => void;
   setCurrentTab: (tab: NavTab) => void;
   setLanguage: (lang: Language) => void;
   setTheme: (theme: Theme) => void;
@@ -55,6 +58,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   currentTab: initialTab,
   language: previewLanguage,
   theme: 'system',
+  appVersion: '0.1.2',
+  isPortable: false,
   runningModal: {
     isOpen: false,
     browser: '',
@@ -62,6 +67,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   toasts: [],
   isChangelogOpen: false,
 
+  setAppMeta: (version, isPortable) => set({ appVersion: version, isPortable }),
   setCurrentTab: (tab) => set({ currentTab: tab }),
 
   setLanguage: (lang) => {

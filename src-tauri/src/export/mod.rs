@@ -198,6 +198,7 @@ fn fetch_records_for_export(
         JOIN sources s ON v.source_id = s.id
         {}
         {}
+        LIMIT 100000
         "#,
         where_clause, sort_order
     );

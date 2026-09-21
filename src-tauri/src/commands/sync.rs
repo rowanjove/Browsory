@@ -225,6 +225,7 @@ pub async fn execute_webdav_sync(
     config: crate::sync::webdav::WebDavConfig,
     db: State<'_, DbState>,
 ) -> AppResult<crate::sync::SyncStatusReport> {
+    crate::license::require_pro(&db.app_dir, crate::license::FEATURE_WEBDAV_SYNC)?;
     let config = hydrate_webdav_password(config, &db.app_dir)?;
     if config.enabled {
         return Err(crate::error::AppError::Sync(

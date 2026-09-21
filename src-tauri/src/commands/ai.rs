@@ -104,6 +104,8 @@ pub async fn generate_embeddings_batch(
         let conn = db.conn.lock().unwrap();
         get_embedding_credentials(&conn, &db.app_dir)
     };
+    crate::license::require_pro(&db.app_dir, crate::license::FEATURE_SEMANTIC_SEARCH)
+        .map_err(|e| e.to_string())?;
     crate::commands::settings::validate_ai_endpoint(&base_url)?;
     let emb_model = model.unwrap_or(configured_model);
 
@@ -159,6 +161,8 @@ pub async fn hybrid_search(
     limit: Option<usize>,
     db: State<'_, DbState>,
 ) -> Result<Vec<HybridSearchResult>, String> {
+    crate::license::require_pro(&db.app_dir, crate::license::FEATURE_SEMANTIC_SEARCH)
+        .map_err(|e| e.to_string())?;
     let lim = limit.unwrap_or(30);
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -195,6 +199,8 @@ pub async fn get_similar_pages(
     limit: Option<usize>,
     db: State<'_, DbState>,
 ) -> Result<Vec<SimilarPageItem>, String> {
+    crate::license::require_pro(&db.app_dir, crate::license::FEATURE_SEMANTIC_SEARCH)
+        .map_err(|e| e.to_string())?;
     let conn = db.conn.lock().unwrap();
     let m = match model {
         Some(m) if !m.trim().is_empty() => m,
@@ -227,6 +233,8 @@ pub async fn generate_ai_period_comparison(
     days: Option<u32>,
     db: State<'_, DbState>,
 ) -> Result<String, String> {
+    crate::license::require_pro(&db.app_dir, crate::license::FEATURE_SEMANTIC_SEARCH)
+        .map_err(|e| e.to_string())?;
     let selected_days = days.unwrap_or(30);
     let evolution = {
         let conn = db.conn.lock().unwrap();

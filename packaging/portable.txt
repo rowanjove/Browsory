@@ -1,0 +1,2 @@
+This marker makes Browsory run in portable mode.
+Data, logs, backups and the archive database are stored in a "data" folder next to browsory.exe.

@@ -156,6 +156,33 @@ pub fn load_active_license(app_dir: &Path) -> LicenseInfo {
     }
 }
 
+pub const FEATURE_SEMANTIC_SEARCH: &str = "semantic_search";
+pub const FEATURE_OFFLINE_ARCHIVE: &str = "snapshots";
+pub const FEATURE_WEBDAV_SYNC: &str = "sync";
+
+/// 后端功能门禁。证书未列出 features 时，Pro 视为开通全部专业功能。
+pub fn require_pro(app_dir: &Path, feature: &str) -> AppResult<()> {
+    let info = load_active_license(app_dir);
+    if !info.is_pro {
+        return Err(AppError::Other(format!(
+            "此功能需要 Browsory Pro 授权（{}）",
+            feature
+        )));
+    }
+    if info.features.is_empty()
+        || info
+            .features
+            .iter()
+            .any(|item| item == feature || item == "*")
+    {
+        return Ok(());
+    }
+    Err(AppError::Other(format!(
+        "当前授权未包含功能：{}",
+        feature
+    )))
+}
+
 /// 移除本地授权，恢复免费 Core 版
 pub fn revoke_license(app_dir: &Path) -> AppResult<()> {
     let path = get_license_file_path(app_dir);
@@ -321,5 +348,17 @@ pub mod tests {
         let res = verify_license_key(&license_key, &pubkey_hex);
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("超过有效期"));
+    }
+
+    #[test]
+    fn require_pro_rejects_missing_license() {
+        let dir = std::env::temp_dir().join(format!(
+            "browsory_license_gate_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let err = require_pro(&dir, FEATURE_SEMANTIC_SEARCH).unwrap_err();
+        assert!(err.to_string().contains("Pro 授权"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

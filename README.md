@@ -83,9 +83,9 @@ Browsory 采用现代轻量级跨平台架构，追求极低资源占用与高�
 
 前往 [Releases 页面](https://github.com/rowanjove/browsory/releases) 下载最新版本的安装程序：
 
-- **Windows 安装引导包**：`browsory-v0.1.0-windows-x64-setup.exe`
-- **Windows MSI 安装包**：`browsory-v0.1.0-windows-x64.msi`
-- **绿色便携版压缩包**：`browsory-v0.1.0-windows-x64-portable.zip`（解压即用，不写注册表）
+- **Windows 安装引导包**：`Browsory_0.1.2_x64-setup.exe`
+- **Windows MSI 安装包**：`Browsory_0.1.2_x64_en-US.msi`
+- **绿色便携版压缩包**：`Browsory_0.1.2_x64_portable.zip`（解压即用。目录内需保留 `portable.txt`，数据写在程序旁 `data\` 目录）
 
 ---
 
@@ -118,7 +118,7 @@ pnpm tauri build
 
 ## 🔒 隐私与安全性
 
-1. **绝对本地化**：软件不部署也不连接任何官方中心化服务器，历史数据仅驻留在用户个人电脑的 AppData 目录中。
+1. **绝对本地化**：默认不连接官方服务器。安装版数据在用户 AppData；便携版（程序旁有 `portable.txt`）写在程序目录的 `data\`。详见 [隐私说明](./docs/PRIVACY.md)。 PIN 只锁定界面，不会加密 `archive.db`。
 2. **只读保护**：扫描与导入浏览器数据时，仅对源文件建立只读临时副本，不会修改、删除或污染浏览器本身的任何记录。
 3. **敏感规则过滤**：支持自定义敏感域名正则规则（Private / Hidden），命中规则的记录在接入 AI 分析时自动被剥离或在界面脱敏展示。
 

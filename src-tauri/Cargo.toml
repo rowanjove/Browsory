@@ -1,6 +1,6 @@
 [package]
 name = "browsory"
-version = "0.1.1"
+version = "0.1.2"
 description = "Browsory - 浏览足迹 (Local Browser History Archive Tool)"
 authors = ["Browsory contributors"]
 edition = "2021"

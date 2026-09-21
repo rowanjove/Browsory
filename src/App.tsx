@@ -13,12 +13,14 @@ import { ToastContainer } from './components/Common/Toast';
 import { LockScreen } from './components/Layout/LockScreen';
 import { QuickSearchModal } from './components/QuickSearch/QuickSearchModal';
 import { OnboardingWizard } from './components/Onboarding/OnboardingWizard';
+import { CloseConfirmModal } from './components/Layout/CloseConfirmModal';
 import { useAppStore } from './stores/useAppStore';
 import { useSecurityStore } from './stores/useSecurityStore';
 import { useHistoryStore } from './stores/useHistoryStore';
+import { tauriApi } from './services/tauri';
 
 export const App: React.FC = () => {
-  const { currentTab, setCurrentTab, setTheme, setLanguage } = useAppStore();
+  const { currentTab, setCurrentTab, setTheme, setLanguage, setAppMeta } = useAppStore();
   const {
     isInitialized,
     isLocked,
@@ -33,6 +35,7 @@ export const App: React.FC = () => {
 
   const [isQuickSearchOpen, setIsQuickSearchOpen] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const lastActivityRef = useRef<number>(Date.now());
 
   useEffect(() => {
@@ -54,6 +57,10 @@ export const App: React.FC = () => {
 
     // 2. Initialize security & check lock status
     checkSecurityState();
+    tauriApi
+      .getAppInfo()
+      .then((info) => setAppMeta(info.version, info.is_portable))
+      .catch(console.error);
   }, []);
 
   // 3. User Activity Tracker for Auto-Lock
@@ -159,6 +166,7 @@ export const App: React.FC = () => {
     let unlistenSearch: (() => void) | undefined;
     let unlistenSync: (() => void) | undefined;
     let unlistenLock: (() => void) | undefined;
+    let unlistenClose: (() => void) | undefined;
 
     listen('browsory://open-quick-search', () => {
       handleOpenQuickSearch();
@@ -180,11 +188,18 @@ export const App: React.FC = () => {
       unlistenLock = un;
     });
 
+    listen('browsory://close-requested', () => {
+      setShowCloseConfirm(true);
+    }).then((un) => {
+      unlistenClose = un;
+    });
+
     return () => {
       window.removeEventListener('browsory:open-quick-search', handleOpenQuickSearch);
       if (unlistenSearch) unlistenSearch();
       if (unlistenSync) unlistenSync();
       if (unlistenLock) unlistenLock();
+      if (unlistenClose) unlistenClose();
     };
   }, [isLocked, pinEnabled, lock, triggerSyncAll]);
 
@@ -233,6 +248,10 @@ export const App: React.FC = () => {
         }}
       />
       <RunningModal />
+      <CloseConfirmModal
+        isOpen={showCloseConfirm}
+        onClose={() => setShowCloseConfirm(false)}
+      />
       <ToastContainer />
     </div>
   );

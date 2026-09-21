@@ -181,14 +181,6 @@ export const SourcesPage: React.FC = () => {
   const handleSyncProfile = async (p: DiscoveredProfile) => {
     setSyncingId(`${p.browser}-${p.profile_id}`);
     try {
-      // Check running
-      const isRunning = await tauriApi.checkBrowserRunning(p.browser);
-      if (isRunning) {
-        openRunningModal(p.browser, p.source_id || undefined);
-        setSyncingId(null);
-        return;
-      }
-
       // Sync specific source if available, otherwise fallback to syncAll
       if (p.source_id) {
         const res = await tauriApi.syncSource(p.source_id);
@@ -220,7 +212,11 @@ export const SourcesPage: React.FC = () => {
       fetchHistory(true);
       scan();
     } catch (err: any) {
-      showToast(err?.message || '同步失败', 'error');
+      const msg = typeof err === 'string' ? err : err?.message || '同步失败';
+      if (/快照|高频写入|完整性校验/.test(msg)) {
+        openRunningModal(p.browser, p.source_id || undefined);
+      }
+      showToast(msg, 'error');
     } finally {
       setSyncingId(null);
     }

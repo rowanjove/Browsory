@@ -119,7 +119,7 @@ export const EmbeddingSettingsCard: React.FC = () => {
       const status = await tauriApi.getEmbeddingStatus(embeddingModel.trim());
       setIndexingStatus(status);
     } catch (err: any) {
-      showToast(err?.message || '生成向量索引失败，请检查配置', 'error');
+      showToast(typeof err === 'string' ? err : err?.message || '生成向量索引失败，请检查配置', 'error');
     } finally {
       setIsBatchGenerating(false);
     }

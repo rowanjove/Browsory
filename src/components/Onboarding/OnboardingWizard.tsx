@@ -338,10 +338,10 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
             <div className="space-y-6 animate-in fade-in duration-200">
               <div className="space-y-1">
                 <h2 className="text-2xl font-black text-slate-900 dark:text-slate-100 tracking-tight">
-                  数据库安全与 PIN 应用锁 (可选)
+                  PIN 应用锁（可选）
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400">
-                  为防止他人触碰你的电脑时查看你的历史足迹，你可以设置一个独立的 4-6 位数字 PIN 码保护应用。
+                  PIN 只锁定应用窗口，防止旁人看到界面。浏览历史仍以明文保存在本机 SQLite 中，PIN 不会加密数据库。
                 </p>
               </div>
 
@@ -395,7 +395,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
                       className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold text-xs shadow-sm transition flex items-center gap-2 cursor-pointer"
                     >
                       <Lock className="w-3.5 h-3.5" />
-                      <span>{settingPin ? '正在加密封装...' : '启用 PIN 锁保护'}</span>
+                      <span>{settingPin ? '正在启用应用锁...' : '启用 PIN 应用锁'}</span>
                     </button>
                   </div>
                 </form>
@@ -407,7 +407,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({
                   </div>
 
                   <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                    请务必安全保存以下<strong>恢复密钥 (Recovery Key)</strong>。若忘记 PIN 码，你可以通过此密钥紧急恢复数据：
+                    请务必保存以下<strong>恢复密钥</strong>。忘记 PIN 时可用它重置应用锁。密钥不能加密或解密历史库，数据始终以明文存放在本机。
                   </p>
 
                   <div className="flex items-center justify-between p-3 bg-white dark:bg-slate-900 rounded-xl border border-emerald-200 dark:border-emerald-800 font-mono text-xs text-emerald-700 dark:text-emerald-300 select-all">

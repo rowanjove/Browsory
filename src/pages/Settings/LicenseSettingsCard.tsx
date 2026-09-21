@@ -73,7 +73,7 @@ export const LicenseSettingsCard: React.FC = () => {
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              本地优先存储，免费版不限历史条数；Pro 版提供进阶本地智能与端到端安全
+              免费版包含导入、全文检索、分析、PIN 应用锁与备份。Pro 开放语义检索、离线归档和 WebDAV 连接。
             </p>
           </div>
         </div>
@@ -106,29 +106,28 @@ export const LicenseSettingsCard: React.FC = () => {
           </div>
 
           <div className="flex items-center justify-between text-xs">
-            <span className="text-slate-500 dark:text-slate-400">设备绑定上限:</span>
+            <span className="text-slate-500 dark:text-slate-400">设备上限（证书声明）:</span>
             <span className="font-medium text-slate-800 dark:text-slate-200">
-              {license?.device_limit ?? 3} 台设备
+              {license?.device_limit ?? 1} 台 · 离线授权不联网计数
             </span>
           </div>
 
-          {/* Pro Benefits */}
           <div className="pt-2 border-t border-amber-200/60 dark:border-amber-900/40 space-y-1.5">
             <span className="text-[11px] font-semibold text-amber-800 dark:text-amber-300 flex items-center gap-1">
-              <Zap className="w-3.5 h-3.5" /> 已激活的 Pro 特权：
+              <Zap className="w-3.5 h-3.5" /> 当前授权已开放：
             </span>
             <div className="grid grid-cols-2 gap-1.5 text-xs text-slate-600 dark:text-slate-300">
               <span className="flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> 本地 PIN 保护与安全备份
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> 语义混合检索与向量索引
               </span>
               <span className="flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> 4 层语义混合检索与召回
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> 离线页面归档
               </span>
               <span className="flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> 离线阅读索引与沙箱渲染
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> WebDAV 连接（双向同步未开放）
               </span>
               <span className="flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> WebDAV HTTPS 凭据保护
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> 周期对比等进阶 AI 分析
               </span>
             </div>
           </div>
@@ -145,6 +144,9 @@ export const LicenseSettingsCard: React.FC = () => {
         </div>
       ) : (
         <div className="space-y-3 pt-1">
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+            未激活时仍可使用导入、FTS 检索、分析看板、PIN 应用锁和备份。语义检索、离线归档和 WebDAV 需要 Pro 授权，后端会拒绝未授权调用。
+          </p>
           <div className="flex flex-col gap-1.5">
             <label className="text-xs font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
               <Key className="w-3.5 h-3.5 text-slate-400" /> 输入 Pro 授权码 (License Key)

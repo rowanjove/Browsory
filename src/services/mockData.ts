@@ -191,6 +191,8 @@ export const mockAnalytics: AnalyticsSummary = {
 };
 
 export const mockAppInfo: AppInfo = {
+  version: '0.1.2',
+  is_portable: false,
   app_dir: 'C:\\Users\\MockUser\\AppData\\Local\\com.browsory.desktop',
   db_path: 'C:\\Users\\MockUser\\AppData\\Local\\com.browsory.desktop\\browsory.db',
   db_size_bytes: 28450120,

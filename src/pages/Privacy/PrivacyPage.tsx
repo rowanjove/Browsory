@@ -102,7 +102,7 @@ export const PrivacyPage: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs md:text-sm text-slate-500 dark:text-slate-400 mt-1">
-                明确数据仅保存在本地、禁止隐蔽联网、支持端到端加密与访问锁。
+                数据默认只保存在本机。PIN 锁定界面，不会加密数据库。云端 AI 仅在你主动配置后才会出网。
               </p>
             </div>
           </div>
@@ -137,7 +137,7 @@ export const PrivacyPage: React.FC = () => {
                   <span className="text-sm font-bold">100% 本地优先存储</span>
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                  所有浏览足迹保存在本地高可靠 SQLite WAL 中。Browsory 不架设中央用户账户服务器，更绝不收集或上传用户的任何历史记录。
+                  浏览足迹保存在本机 SQLite（archive.db，明文）。Browsory 没有自己的用户云。只有你主动配置的 AI / WebDAV / 检查更新才会访问网络。
                 </p>
               </div>
               <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
@@ -180,6 +180,14 @@ export const PrivacyPage: React.FC = () => {
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs text-slate-600 dark:text-slate-300 leading-relaxed space-y-2">
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">卸载与数据删除</h3>
+          <p>
+            卸载安装包通常不会删除历史库。请到设置页打开数据目录，自行决定是否删除
+            archive.db、backups 和 logs。完整说明见仓库 docs/PRIVACY.md，第三方许可见 docs/THIRD_PARTY_NOTICES.md。
+          </p>
         </div>
 
         {/* 2. Privacy Rules & Excluded Domains Engine */}

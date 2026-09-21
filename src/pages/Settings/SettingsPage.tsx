@@ -27,6 +27,7 @@ import { WebdavSyncCard } from './WebdavSyncCard';
 export const SettingsPage: React.FC = () => {
   const { language, setLanguage, theme, setTheme, showToast, t } = useAppStore();
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [closeBehavior, setCloseBehavior] = useState<'ask' | 'tray' | 'quit'>('ask');
 
   const isCurrentDark =
     theme === 'dark' ||
@@ -55,6 +56,9 @@ export const SettingsPage: React.FC = () => {
 
   useEffect(() => {
     tauriApi.getAppInfo().then(setAppInfo).catch(console.error);
+    tauriApi.getSetting('close_behavior').then((v) => {
+      if (v === 'tray' || v === 'quit' || v === 'ask') setCloseBehavior(v);
+    });
     tauriApi.getSetting('ai_base_url').then((v) => {
       if (v) {
         setAiBaseUrl(v);
@@ -443,6 +447,37 @@ export const SettingsPage: React.FC = () => {
             存储管理与物理目录
           </h2>
 
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs space-y-3">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">关闭窗口时</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              点标题栏关闭默认会询问。最小化到托盘后，后台仍会监视浏览器历史。
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {([
+                ['ask', '每次询问'],
+                ['tray', '最小化到托盘'],
+                ['quit', '退出程序'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={async () => {
+                    setCloseBehavior(value);
+                    await tauriApi.setSetting('close_behavior', value);
+                    showToast('关闭行为已保存', 'success');
+                  }}
+                  className={`px-3 py-1.5 rounded-xl text-xs border transition ${
+                    closeBehavior === value
+                      ? 'border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300'
+                      : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <StorageSettingsCard />
 
           {/* Local Storage & Paths Card */}
@@ -456,9 +491,16 @@ export const SettingsPage: React.FC = () => {
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                       存储与诊断路径定位
+                      {appInfo.is_portable && (
+                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                          便携模式
+                        </span>
+                      )}
                     </h3>
                     <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                      点击任意路径项或右侧文件夹图标，直接在系统文件管理器中打开
+                      {appInfo.is_portable
+                        ? '数据写在程序旁 data 目录。卸载时请自行删除该目录。'
+                        : '安装版数据在用户 AppData。卸载通常不会删除此目录。'}
                     </p>
                   </div>
                 </div>

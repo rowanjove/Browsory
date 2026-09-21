@@ -85,7 +85,7 @@ export const ChangelogModal: React.FC = () => {
                   版本更新说明
                 </h2>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold font-mono bg-blue-100 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
-                  v0.1.0 初始正式版
+                  v0.1.2
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">

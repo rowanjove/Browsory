@@ -272,7 +272,7 @@ pub async fn upload_and_sync(
     let manifest = DeviceManifest {
         device_id: device_id.clone(),
         device_name: whoami_host_name(),
-        app_version: "0.1.0".to_string(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
         last_sync_time: Utc::now().timestamp_millis(),
         items_count,
     };

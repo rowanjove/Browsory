@@ -74,6 +74,9 @@ export const RunningModal: React.FC = () => {
             <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
               {t('processModal.desc', { browser: runningModal.browser })}
             </p>
+            <p className="text-[11px] text-amber-700 dark:text-amber-400 leading-relaxed">
+              「关闭浏览器后再同步」会结束该浏览器的所有窗口，未保存的网页可能丢失。
+            </p>
           </div>
         </div>
 

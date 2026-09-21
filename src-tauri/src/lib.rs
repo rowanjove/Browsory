@@ -43,8 +43,8 @@ use commands::security::{
     toggle_privacy_rule, update_security_options, vacuum_database, verify_pin, verify_recovery_key,
 };
 use commands::settings::{
-    call_ai_completion, get_app_info, get_setting, set_setting, test_ai_connection,
-    test_embedding_connection,
+    call_ai_completion, check_for_updates, get_app_info, get_setting, quit_application, set_setting,
+    test_ai_connection, test_embedding_connection,
 };
 use commands::storage::{clean_storage_cache, get_storage_breakdown};
 use commands::sync::{
@@ -133,9 +133,29 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            use tauri::{Emitter, Manager};
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
                 api.prevent_close();
+                let behavior = window
+                    .try_state::<database::DbState>()
+                    .and_then(|db| {
+                        let conn = db.conn.lock().ok()?;
+                        database::repository::get_setting(&conn, "close_behavior")
+                            .ok()
+                            .flatten()
+                    })
+                    .unwrap_or_default();
+                match behavior.as_str() {
+                    "tray" => {
+                        let _ = window.hide();
+                    }
+                    "quit" => {
+                        window.app_handle().exit(0);
+                    }
+                    _ => {
+                        let _ = window.emit("browsory://close-requested", ());
+                    }
+                }
             }
         })
         .manage(db_state)
@@ -157,6 +177,8 @@ pub fn run() {
             get_app_info,
             get_setting,
             set_setting,
+            quit_application,
+            check_for_updates,
             call_ai_completion,
             test_ai_connection,
             get_security_state,

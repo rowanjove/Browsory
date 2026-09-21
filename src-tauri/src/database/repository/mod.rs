@@ -2890,6 +2890,8 @@ pub fn find_similar_pages(
         FROM page_embeddings pe
         JOIN urls u ON pe.url_id = u.id
         WHERE pe.model = ?1 AND pe.url_id != ?2
+        ORDER BY lvt DESC
+        LIMIT 4000
         "#,
     )?;
 
@@ -3027,6 +3029,8 @@ pub fn hybrid_search_history(
             FROM page_embeddings pe
             JOIN urls u ON pe.url_id = u.id
             WHERE pe.model = ?1
+            ORDER BY lvt DESC
+            LIMIT 4000
             "#,
         )?;
 

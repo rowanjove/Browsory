@@ -81,9 +81,9 @@ Theme, PIN security, LLM endpoint configuration, and release details:
 
 Visit the [Releases Page](https://github.com/rowanjove/browsory/releases) to download the latest builds:
 
-- **Windows Setup Installer**: `browsory-v0.1.0-windows-x64-setup.exe`
-- **Windows MSI Package**: `browsory-v0.1.0-windows-x64.msi`
-- **Portable ZIP**: `browsory-v0.1.0-windows-x64-portable.zip` (No installer required)
+- **Windows Setup Installer**: `Browsory_0.1.2_x64-setup.exe`
+- **Windows MSI Package**: `Browsory_0.1.2_x64_en-US.msi`
+- **Portable ZIP**: `Browsory_0.1.2_x64_portable.zip` (Keep `portable.txt` next to the executable; data is stored in a sibling `data` folder)
 
 ---
 

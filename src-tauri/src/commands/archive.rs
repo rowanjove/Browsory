@@ -18,6 +18,7 @@ pub async fn save_offline_archive(
     payload: SaveArchivePayload,
     db: State<'_, DbState>,
 ) -> AppResult<PageArchiveSummary> {
+    crate::license::require_pro(&db.app_dir, crate::license::FEATURE_OFFLINE_ARCHIVE)?;
     let conn = db.conn.lock().unwrap();
     repo_save_offline_archive(&db.app_dir, &conn, payload)
 }

@@ -42,6 +42,7 @@ import {
   SyncStatusReport,
   LicenseCertificate,
   LicenseInfo,
+  UpdateCheckResult,
   WebsiteRankingItem,
   WebMemoryAnswer,
   InterestEvolution,
@@ -132,6 +133,14 @@ export const tauriApi = {
   getAppInfo: async (): Promise<AppInfo> => {
     if (!isTauri) return mockAppInfo;
     return invoke<AppInfo>('get_app_info');
+  },
+
+  checkForUpdates: async (): Promise<UpdateCheckResult> => {
+    return invoke<UpdateCheckResult>('check_for_updates');
+  },
+
+  quitApplication: async (): Promise<void> => {
+    return invoke<void>('quit_application');
   },
 
   getSetting: async (key: string): Promise<string | null> => {

@@ -103,11 +103,21 @@ export interface SyncResult {
 }
 
 export interface AppInfo {
+  version: string;
+  is_portable: boolean;
   app_dir: string;
   db_path: string;
   db_size_bytes: number;
   temp_dir: string;
   logs_dir: string;
+}
+
+export interface UpdateCheckResult {
+  current_version: string;
+  latest_version?: string | null;
+  release_url?: string | null;
+  notes?: string | null;
+  update_available: boolean;
 }
 
 export type NavTab = 'home' | 'history' | 'analytics' | 'sources' | 'ai' | 'privacy' | 'settings';

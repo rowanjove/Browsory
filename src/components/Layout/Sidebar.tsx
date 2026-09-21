@@ -9,7 +9,7 @@ import { JobManagerModal } from './JobManagerModal';
 import { ChangelogModal } from './ChangelogModal';
 
 export const Sidebar: React.FC = () => {
-  const { currentTab, setCurrentTab, openChangelog, t } = useAppStore();
+  const { currentTab, setCurrentTab, openChangelog, t, appVersion } = useAppStore();
   const { pinEnabled, lock, isSyncing, lastSyncTime, lastSyncCount } = useSecurityStore();
   const [isSyncCenterOpen, setIsSyncCenterOpen] = useState(false);
   const [isJobManagerOpen, setIsJobManagerOpen] = useState(false);
@@ -45,7 +45,7 @@ export const Sidebar: React.FC = () => {
             className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200/70 hover:bg-blue-50 hover:text-blue-600 dark:bg-slate-800 dark:hover:bg-blue-950/60 dark:hover:text-blue-400 text-slate-500 font-mono shrink-0 cursor-pointer transition border border-transparent hover:border-blue-200 dark:hover:border-blue-800"
             title="点击查看版本更新说明"
           >
-            v0.1.0
+            v{appVersion}
           </button>
         </div>
 

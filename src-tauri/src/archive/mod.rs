@@ -154,7 +154,7 @@ pub fn save_offline_archive(
     size_bytes += meta_str.len() as u64;
 
     // 5. Upsert into offline_archives table
-    conn.execute(
+    let record_id: i64 = conn.query_row(
         r#"
         INSERT INTO offline_archives (
             url_id, page_uuid, archive_level, relative_path, title, domain,
@@ -166,6 +166,7 @@ pub fn save_offline_archive(
             has_snapshot_html = excluded.has_snapshot_html,
             size_bytes = excluded.size_bytes,
             archived_at = excluded.archived_at
+        RETURNING id
         "#,
         params![
             payload.url_id,
@@ -179,9 +180,8 @@ pub fn save_offline_archive(
             size_bytes as i64,
             now
         ],
+        |r| r.get(0),
     )?;
-
-    let record_id = conn.last_insert_rowid();
 
     Ok(PageArchiveSummary {
         id: record_id,
@@ -366,6 +366,20 @@ mod tests {
             .snapshot_html
             .unwrap()
             .contains("<h1>Rust Async</h1>"));
+
+        let replace_payload = SaveArchivePayload {
+            url_id: 1,
+            archive_level: "content".to_string(),
+            markdown: Some("# Rust Async\nUpdated body.".to_string()),
+            html: None,
+            title: Some("Rust Async Cancellation".to_string()),
+            author: Some("Ferris".to_string()),
+        };
+        let replaced = save_offline_archive(&temp_dir, &conn, replace_payload).unwrap();
+        assert_eq!(replaced.id, summary.id);
+        assert_eq!(replaced.page_uuid, summary.page_uuid);
+        assert!(replaced.has_markdown);
+        assert!(!replaced.has_snapshot_html);
 
         // 3. Verify FTS table page_contents_fts also has the record
         let fts_title: String = conn

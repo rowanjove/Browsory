@@ -68,11 +68,11 @@
     "syncSuccess": "同步完成：新增 {{inserted}} 条，重复 {{duplicate}} 条"
   },
   "processModal": {
-    "title": "浏览器正在运行",
-    "desc": "检测到 {{browser}} 正在运行中。浏览器打开期间历史数据库可能处于独占锁定状态。",
+    "title": "只读快照未能完成",
+    "desc": "{{browser}} 正在写入历史库，刚才的只读快照没有拿到一致副本。可以再试一次快照同步；关闭浏览器会结束该浏览器的全部窗口。",
     "cancel": "取消",
-    "trySync": "尝试直接同步",
-    "closeAndSync": "关闭浏览器并同步"
+    "trySync": "再次尝试快照同步",
+    "closeAndSync": "关闭浏览器后再同步"
   },
   "settings": {
     "title": "系统设置",
