@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { tauriApi } from '../../services/tauri';
 import { BackgroundJob } from '../../types';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
+import { useAppStore } from '../../stores/useAppStore';
 
 interface JobManagerModalProps {
   isOpen: boolean;
@@ -25,6 +27,8 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<'all' | 'running' | 'completed' | 'cancelled'>('all');
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const dialogRef = useDialogFocus<HTMLDivElement>({ isOpen, onClose });
+  const { t, language } = useAppStore();
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -87,7 +91,7 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
   };
 
   const formatTime = (ts: number) => {
-    return new Date(ts).toLocaleTimeString('zh-CN', {
+    return new Date(ts).toLocaleTimeString(language === 'en-US' ? 'en-US' : 'zh-CN', {
       hour: '2-digit',
       minute: '2-digit',
       second: '2-digit',
@@ -96,7 +100,7 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-200">
-      <div className="flex flex-col w-full max-w-2xl max-h-[85vh] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="jobs-title" tabIndex={-1} className="flex flex-col w-full max-w-2xl max-h-[85vh] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-2.5">
@@ -105,37 +109,40 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">
-                  后台任务与队列中心
+                <h2 id="jobs-title" className="text-base font-semibold text-slate-800 dark:text-slate-100">
+                  {t('jobs.title')}
                 </h2>
                 {runningCount > 0 && (
                   <span className="flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-blue-100 dark:bg-blue-900/60 text-blue-600 dark:text-blue-300 font-medium animate-pulse">
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-600 dark:bg-blue-400"></span>
-                    {runningCount} 个执行中
+                    {t('jobs.runningCount', { count: runningCount })}
                   </span>
                 )}
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                监控离线归档下载、语义向量化以及端到端加密同步等后台长耗时任务
+                {t('jobs.description')}
               </p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button
+              <button
+                type="button"
               onClick={() => {
                 setLoading(true);
                 fetchJobs().finally(() => setLoading(false));
               }}
               disabled={loading}
               className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
-              title="刷新任务列表"
+              title={t('jobs.refresh')}
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
-            >
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label={t('dialogs.closeJobs')}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              >
               <X className="w-5 h-5" />
             </button>
           </div>
@@ -145,16 +152,16 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
         <div className="flex items-center gap-2 px-6 py-2.5 bg-slate-50/50 dark:bg-slate-900/50 border-b border-slate-100 dark:border-slate-800">
           {(
             [
-              { key: 'all', label: '全部任务', count: jobs.length },
-              { key: 'running', label: '运行中', count: runningCount },
+              { key: 'all', label: t('jobs.all'), count: jobs.length },
+              { key: 'running', label: t('jobs.running'), count: runningCount },
               {
                 key: 'completed',
-                label: '已完成',
+                label: t('jobs.completed'),
                 count: jobs.filter((j) => j.status === 'completed').length,
               },
               {
                 key: 'cancelled',
-                label: '已终止/异常',
+                label: t('jobs.cancelled'),
                 count: jobs.filter((j) => j.status === 'cancelled' || j.status === 'failed').length,
               },
             ] as const
@@ -187,9 +194,9 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
           {filteredJobs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center text-slate-400">
               <Activity className="w-12 h-12 stroke-[1.2] mb-3 opacity-40 text-slate-400" />
-              <p className="text-sm font-medium">当前无匹配的任务记录</p>
+              <p className="text-sm font-medium">{t('jobs.empty')}</p>
               <p className="text-xs text-slate-500 mt-1">
-                当触发长耗时离线归档或批量 Embedding 处理时将在此展示进度
+                {t('jobs.emptyHelp')}
               </p>
             </div>
           ) : (
@@ -209,7 +216,7 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
               return (
                 <div
                   key={job.id}
-                  className="flex flex-col gap-2.5 p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-850/60 hover:border-slate-300 dark:hover:border-slate-700 transition shadow-xs"
+                  className="flex flex-col gap-2.5 p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-800/60 hover:border-slate-300 dark:hover:border-slate-700 transition shadow-xs"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3">
@@ -244,29 +251,29 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
                             onClick={() => handleCancelJob(job.id)}
                             disabled={cancellingId === job.id}
                             className="flex items-center gap-1 px-2.5 py-1 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-900/60 rounded-lg transition cursor-pointer"
-                            title="取消当前任务"
+                            title={t('jobs.cancel')}
                           >
                             <Ban className="w-3 h-3" />
-                            <span>{cancellingId === job.id ? '取消中...' : '取消'}</span>
+                            <span>{cancellingId === job.id ? t('jobs.cancelling') : t('jobs.cancel')}</span>
                           </button>
                         </>
                       )}
                       {isDone && (
                         <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-md">
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          已完成
+                          {t('jobs.completed')}
                         </span>
                       )}
                       {isCancelled && (
                         <span className="flex items-center gap-1 text-xs font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md">
                           <Ban className="w-3.5 h-3.5" />
-                          已取消
+                          {t('jobs.cancelledStatus')}
                         </span>
                       )}
                       {isFailed && (
                         <span className="flex items-center gap-1 text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 rounded-md">
                           <AlertCircle className="w-3.5 h-3.5" />
-                          失败
+                          {t('jobs.failed')}
                         </span>
                       )}
                     </div>
@@ -289,7 +296,7 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
                       </div>
                       <div className="flex items-center justify-between text-[11px] text-slate-400">
                         <span>
-                          进度: {job.progress_current} / {job.progress_total}
+                          {t('jobs.progress', { current: job.progress_current, total: job.progress_total })}
                         </span>
                         <div className="flex items-center gap-2">
                           <span className="flex items-center gap-1">
@@ -308,12 +315,12 @@ export const JobManagerModal: React.FC<JobManagerModalProps> = ({ isOpen, onClos
 
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-3 bg-slate-50 dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
-          <span>总任务数: {jobs.length} 项</span>
+          <span>{t('jobs.total', { count: jobs.length })}</span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 font-medium transition cursor-pointer"
           >
-            关闭
+            {t('jobs.close')}
           </button>
         </div>
       </div>

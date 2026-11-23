@@ -70,9 +70,12 @@ export interface HistoryFilter {
   end_time?: number;
   cursor_time?: number;
   cursor_id?: number;
+  /** Stable sort-key cursor for non-time history ordering. */
+  cursor_sort_value?: number;
   limit?: number;
   only_favorites?: boolean;
   tag?: string;
+  ai_scope?: boolean;
   sort_by?: 'time_desc' | 'time_asc' | 'visit_count' | 'duration';
   offset?: number;
 }
@@ -88,6 +91,8 @@ export interface HistoryPageResult {
   items: VisitListItem[];
   next_cursor_time: number | null;
   next_cursor_id: number | null;
+  /** Stable sort-key cursor returned by newer backends; absent on older mocks. */
+  next_cursor_sort_value?: number | null;
   has_more: boolean;
 }
 
@@ -100,6 +105,8 @@ export interface SyncResult {
   duplicate_count: number;
   failed_count: number;
   duration_ms: number;
+  status?: 'success' | 'skipped' | 'failed';
+  error?: string | null;
 }
 
 export interface AppInfo {
@@ -263,11 +270,40 @@ export interface BatchImportResult {
   results: BatchImportFileResult[];
 }
 
+export type VaultStatus =
+  | 'unconfigured'
+  | 'legacy_plaintext'
+  | 'locked'
+  | 'locking'
+  | 'unlocking'
+  | 'unlocked'
+  | 'migrating'
+  | { error: string };
+
+export interface VaultStatusInfo {
+  recovery_key_pending: boolean;
+  status: VaultStatus;
+  has_envelope: boolean;
+  has_dpapi_wrap?: boolean;
+  has_plaintext_db: boolean;
+  is_portable: boolean;
+}
+
+export interface PassiveResumeResult {
+  unlocked: boolean;
+  pin_required: boolean;
+  is_locked_out: boolean;
+  lockout_remaining_secs: number;
+  error_message?: string | null;
+}
+
 export interface SecurityState {
   pin_enabled: boolean;
+  pin_migration_needed?: boolean;
   auto_lock_minutes: number;
   lock_on_minimize: boolean;
   lock_on_sleep: boolean;
+  native_sleep_lock_supported?: boolean;
   is_locked_out: boolean;
   lockout_remaining_secs: number;
 }
@@ -470,6 +506,8 @@ export interface TakeoutImportSummary {
   urls_inserted: number;
   visits_inserted: number;
   duplicates_skipped: number;
+  invalid_records_skipped?: number;
+  unknown_time_records?: number;
   duration_ms: number;
 }
 
@@ -502,6 +540,8 @@ export interface DiagnosticsInfo {
   db_path: string;
   db_size_bytes: number;
   db_schema_version: number;
+  sqlite_version?: string;
+  sqlcipher_version?: string | null;
   total_visits: number;
   total_urls: number;
   total_sources: number;
@@ -524,24 +564,6 @@ export interface StorageCleanResult {
   bytes_freed: number;
   temp_files_deleted: number;
   old_logs_deleted: number;
-}
-
-export interface OnThisDayItem {
-  id: number;
-  url: string;
-  title: string;
-  domain: string;
-  visit_time: number;
-  years_ago: number;
-}
-
-export interface OnThisDayResult {
-  items: OnThisDayItem[];
-  total_count: number;
-  available_years: number[];
-  page: number;
-  page_size: number;
-  total_pages: number;
 }
 
 export interface PageArchiveSummary {
@@ -604,27 +626,60 @@ export interface SyncStatusReport {
   timestamp: number;
 }
 
-// Milestone I & J: License & Commercial Pro
-export interface LicenseCertificate {
-  license_id: string;
-  licensee_name: string;
-  licensee_email?: string | null;
-  plan: string;
-  issued_at: number;
-  expires_at?: number | null;
-  device_limit: number;
-  features: string[];
+export type SchedulerHealthStatus =
+  | 'registered'
+  | 'disabled'
+  | 'missing'
+  | 'outdated_path'
+  | 'unsupported'
+  | 'error';
+
+export interface AutoSyncSourceSummary {
+  source_id: number;
+  browser: string;
+  profile: string;
+  status: 'success' | 'skipped' | 'failed';
+  read_count: number;
+  inserted_count: number;
+  duplicate_count: number;
+  duration_ms: number;
+  error?: string | null;
 }
 
-export interface LicenseInfo {
-  is_pro: boolean;
-  plan: string;
-  licensee_name?: string | null;
-  licensee_email?: string | null;
-  expires_at?: number | null;
-  is_expired: boolean;
-  device_limit: number;
-  features: string[];
+export interface AutoSyncRunItem {
+  id: number;
+  run_uuid: string;
+  trigger_type: string;
+  started_at: number;
+  finished_at?: number | null;
+  status: string;
+  sources_total: number;
+  sources_succeeded: number;
+  sources_skipped: number;
+  sources_failed: number;
+  total_read: number;
+  total_inserted: number;
+  total_duplicate: number;
+  duration_ms: number;
+  error_summary?: string | null;
+  details: AutoSyncSourceSummary[];
+}
+
+export interface AutoSyncStatus {
+  enabled: boolean;
+  interval_days: number;
+  last_run_at?: number | null;
+  last_success_at?: number | null;
+  next_run_at?: number | null;
+  bound_sources_count: number;
+  scheduler_status: SchedulerHealthStatus;
+  task_name: string;
+  scheduler_error?: string | null;
+  headless_capable: boolean;
+  is_running: boolean;
+  is_portable: boolean;
+  last_run?: AutoSyncRunItem | null;
+  headless_notice?: string | null;
 }
 
 

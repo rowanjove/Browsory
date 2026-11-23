@@ -1,11 +1,22 @@
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use flate2::write::DeflateEncoder;
+use flate2::{Compression, Decompress, FlushDecompress, Status};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
+
+pub mod attachments;
+mod legacy;
+pub mod retirement;
+pub use legacy::{migrate_legacy_disk_archives, migrate_legacy_disk_archives_checked};
+
+pub const MAX_MARKDOWN_BYTES: u64 = 8 * 1024 * 1024;
+pub const MAX_HTML_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_COMPRESSED_HTML_BYTES: u64 = MAX_HTML_BYTES + 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageArchiveSummary {
@@ -45,11 +56,97 @@ pub fn get_archive_base_dir(app_dir: &Path) -> PathBuf {
     app_dir.join("archive").join("pages")
 }
 
-pub fn save_offline_archive(
+pub fn compress_html(html: &str) -> AppResult<Vec<u8>> {
+    if html.len() as u64 > MAX_HTML_BYTES {
+        return Err(AppError::Security("离线 HTML 超出 16 MiB 限制".into()));
+    }
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(html.as_bytes())?;
+    Ok(encoder.finish()?)
+}
+
+pub fn decompress_html(bytes: &[u8]) -> AppResult<String> {
+    if bytes.len() as u64 > MAX_COMPRESSED_HTML_BYTES {
+        return Err(AppError::Security("离线压缩 HTML 超出限制".into()));
+    }
+    let mut result = Vec::new();
+    let mut decoder = Decompress::new(false);
+    let mut output = [0u8; 64 * 1024];
+    loop {
+        let before_in = decoder.total_in();
+        let before_out = decoder.total_out();
+        let status = decoder
+            .decompress(
+                &bytes[before_in as usize..],
+                &mut output,
+                FlushDecompress::None,
+            )
+            .map_err(|_| AppError::Parse("离线压缩 HTML 损坏".into()))?;
+        if decoder.total_out() > MAX_HTML_BYTES {
+            return Err(AppError::Security("离线 HTML 解压超出 16 MiB 限制".into()));
+        }
+        result.extend_from_slice(&output[..(decoder.total_out() - before_out) as usize]);
+        if status == Status::StreamEnd {
+            if decoder.total_in() != bytes.len() as u64 {
+                return Err(AppError::Parse("离线压缩 HTML 包含多余数据".into()));
+            }
+            break;
+        }
+        if decoder.total_in() == before_in && decoder.total_out() == before_out {
+            return Err(AppError::Parse("离线压缩 HTML 被截断或无效".into()));
+        }
+    }
+    String::from_utf8(result).map_err(|_| AppError::Parse("离线 HTML 并非有效 UTF-8".into()))
+}
+
+fn validate_uuid(value: &str) -> AppResult<()> {
+    if Uuid::parse_str(value)
+        .map(|uuid| uuid.to_string() == value)
+        .unwrap_or(false)
+    {
+        Ok(())
+    } else {
+        Err(AppError::Security("归档标识格式无效".into()))
+    }
+}
+
+fn read_legacy_text(
     app_dir: &Path,
+    uuid: &str,
+    name: &str,
+    limit: u64,
+) -> AppResult<Option<String>> {
+    validate_uuid(uuid)?;
+    let relative = Path::new("archive").join("pages").join(uuid).join(name);
+    crate::security::fs_boundary::read_scoped_file(app_dir, &relative, limit)?
+        .map(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|_| AppError::Parse("旧归档文本并非有效 UTF-8，保留源文件".into()))
+        })
+        .transpose()
+}
+
+pub fn save_offline_archive(
+    _app_dir: &Path,
     conn: &Connection,
     payload: SaveArchivePayload,
 ) -> AppResult<PageArchiveSummary> {
+    if payload
+        .markdown
+        .as_ref()
+        .is_some_and(|text| text.len() as u64 > MAX_MARKDOWN_BYTES)
+    {
+        return Err(AppError::Security("离线 Markdown 超出 8 MiB 限制".into()));
+    }
+    if payload
+        .html
+        .as_ref()
+        .is_some_and(|text| text.len() as u64 > MAX_HTML_BYTES)
+    {
+        return Err(AppError::Security("离线 HTML 超出 16 MiB 限制".into()));
+    }
+    let tx = conn.unchecked_transaction()?;
+    let conn = &tx;
     // 1. Fetch url info from urls table
     let (db_url, db_title, db_domain): (String, String, String) = conn.query_row(
         "SELECT url, COALESCE(title, ''), COALESCE(domain, '') FROM urls WHERE id = ?1",
@@ -71,44 +168,27 @@ pub fn save_offline_archive(
             params![payload.url_id],
             |r| r.get(0),
         )
-        .ok();
+        .optional()?;
 
     let page_uuid = existing_uuid.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let page_dir = get_archive_base_dir(app_dir).join(&page_uuid);
-    fs::create_dir_all(&page_dir)?;
+    validate_uuid(&page_uuid)?;
+    let relative_path = format!("pages/{}", page_uuid);
 
     let mut size_bytes = 0u64;
-    let has_markdown =
-        payload.markdown.is_some() && !payload.markdown.as_ref().unwrap().trim().is_empty();
-    let has_snapshot_html =
-        payload.html.is_some() && !payload.html.as_ref().unwrap().trim().is_empty();
+    let markdown_val = payload.markdown.filter(|value| !value.trim().is_empty());
+    let has_markdown = markdown_val.is_some();
 
-    // When replacing an archive with a lower fidelity payload, remove stale
-    // content files so metadata flags cannot hide orphaned sensitive data.
-    if !has_markdown {
-        let md_path = page_dir.join("content.md");
-        if md_path.exists() {
-            fs::remove_file(md_path)?;
-        }
-    }
-    if !has_snapshot_html {
-        let html_path = page_dir.join("snapshot.html");
-        if html_path.exists() {
-            fs::remove_file(html_path)?;
-        }
-    }
+    let html_val = payload.html.filter(|value| !value.trim().is_empty());
+    let has_snapshot_html = html_val.is_some();
 
-    // 2. Save content.md if markdown provided
-    if let Some(ref md) = payload.markdown.filter(|value| !value.trim().is_empty()) {
-        let md_path = page_dir.join("content.md");
-        fs::write(&md_path, md.as_bytes())?;
+    if let Some(ref md) = markdown_val {
         size_bytes += md.len() as u64;
 
-        // Also upsert into page_contents table for FTS5 full-text indexing
+        // Upsert into page_contents table for FTS5 full-text indexing
         let now = Utc::now().timestamp_millis();
         let word_count = md.split_whitespace().count() as i64;
         let author = payload.author.clone().unwrap_or_default();
-        let _ = conn.execute(
+        conn.execute(
             r#"
             INSERT INTO page_contents (url_id, title, author, description, markdown, plain_text, word_count, extracted_at)
             VALUES (?1, ?2, ?3, '', ?4, ?4, ?5, ?6)
@@ -121,51 +201,40 @@ pub fn save_offline_archive(
                 extracted_at = excluded.extracted_at
             "#,
             params![payload.url_id, title, author, md, word_count, now],
-        );
+        )?;
+    } else {
+        // A metadata-only save keeps an existing body and its search index.
+        conn.execute(
+            "UPDATE page_contents SET title=?1 WHERE url_id=?2",
+            params![title, payload.url_id],
+        )?;
     }
 
-    // 3. Save snapshot.html if html provided
-    if let Some(ref html) = payload.html.filter(|value| !value.trim().is_empty()) {
-        let html_path = page_dir.join("snapshot.html");
-        fs::write(&html_path, html.as_bytes())?;
-        size_bytes += html.len() as u64;
+    let compressed_html = html_val.as_deref().map(compress_html).transpose()?;
+    if let Some(ref comp) = compressed_html {
+        size_bytes += comp.len() as u64;
     }
 
-    // 4. Save metadata.json
     let now = Utc::now().timestamp_millis();
-    let relative_path = format!("pages/{}", page_uuid);
 
-    let metadata_json = serde_json::json!({
-        "page_uuid": page_uuid,
-        "url_id": payload.url_id,
-        "url": url,
-        "title": title,
-        "domain": domain,
-        "archive_level": payload.archive_level,
-        "relative_path": relative_path,
-        "has_markdown": has_markdown,
-        "has_snapshot_html": has_snapshot_html,
-        "has_screenshot": false,
-        "size_bytes": size_bytes,
-        "archived_at": now,
-    });
-    let meta_str = serde_json::to_string_pretty(&metadata_json).unwrap_or_default();
-    fs::write(page_dir.join("metadata.json"), meta_str.as_bytes())?;
-    size_bytes += meta_str.len() as u64;
-
-    // 5. Upsert into offline_archives table
+    // Upsert into offline_archives table directly storing encrypted content in SQLCipher
     let record_id: i64 = conn.query_row(
         r#"
         INSERT INTO offline_archives (
             url_id, page_uuid, archive_level, relative_path, title, domain,
-            has_markdown, has_snapshot_html, has_screenshot, size_bytes, archived_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10)
+            has_markdown, has_snapshot_html, has_screenshot, size_bytes, archived_at,
+            markdown_content, snapshot_html_compressed
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10, ?11, ?12)
         ON CONFLICT(page_uuid) DO UPDATE SET
             archive_level = excluded.archive_level,
-            has_markdown = excluded.has_markdown,
-            has_snapshot_html = excluded.has_snapshot_html,
+            title = excluded.title,
+            domain = excluded.domain,
+            has_markdown = CASE WHEN excluded.markdown_content IS NOT NULL THEN 1 ELSE offline_archives.has_markdown END,
+            has_snapshot_html = CASE WHEN excluded.snapshot_html_compressed IS NOT NULL THEN 1 ELSE offline_archives.has_snapshot_html END,
             size_bytes = excluded.size_bytes,
-            archived_at = excluded.archived_at
+            archived_at = excluded.archived_at,
+            markdown_content = COALESCE(excluded.markdown_content,offline_archives.markdown_content),
+            snapshot_html_compressed = COALESCE(excluded.snapshot_html_compressed,offline_archives.snapshot_html_compressed)
         RETURNING id
         "#,
         params![
@@ -178,10 +247,22 @@ pub fn save_offline_archive(
             has_markdown as i32,
             has_snapshot_html as i32,
             size_bytes as i64,
-            now
+            now,
+            markdown_val,
+            compressed_html
         ],
         |r| r.get(0),
     )?;
+
+    // Keep retained legacy sources. Saving a new version must never erase
+    // screenshots, metadata or unknown attachments from an older directory.
+    conn.execute("UPDATE offline_archives SET size_bytes=COALESCE(length(CAST(markdown_content AS BLOB)),0)+COALESCE(length(snapshot_html_compressed),0) WHERE id=?1", [record_id])?;
+    let (has_markdown,has_snapshot_html,has_screenshot,size_bytes): (bool,bool,bool,u64) = conn.query_row(
+        "SELECT has_markdown,has_snapshot_html,has_screenshot,size_bytes FROM offline_archives WHERE id=?1",
+        [record_id],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    )?;
+    tx.commit()?;
 
     Ok(PageArchiveSummary {
         id: record_id,
@@ -194,7 +275,7 @@ pub fn save_offline_archive(
         relative_path,
         has_markdown,
         has_snapshot_html,
-        has_screenshot: false,
+        has_screenshot,
         size_bytes,
         archived_at: now,
     })
@@ -205,59 +286,50 @@ pub fn get_offline_archive(
     conn: &Connection,
     url_id: i64,
 ) -> AppResult<Option<PageArchiveDetail>> {
-    let summary: Option<PageArchiveSummary> = conn
-        .query_row(
-            r#"
-            SELECT oa.id, oa.url_id, oa.page_uuid, u.url, oa.title, oa.domain,
-                   oa.archive_level, oa.relative_path, oa.has_markdown,
-                   oa.has_snapshot_html, oa.has_screenshot, oa.size_bytes, oa.archived_at
-            FROM offline_archives oa
-            JOIN urls u ON oa.url_id = u.id
-            WHERE oa.url_id = ?1
-            "#,
-            params![url_id],
-            |r| {
-                Ok(PageArchiveSummary {
-                    id: r.get(0)?,
-                    url_id: r.get(1)?,
-                    page_uuid: r.get(2)?,
-                    url: r.get(3)?,
-                    title: r.get(4)?,
-                    domain: r.get(5)?,
-                    archive_level: r.get(6)?,
-                    relative_path: r.get(7)?,
-                    has_markdown: r.get::<_, i32>(8)? != 0,
-                    has_snapshot_html: r.get::<_, i32>(9)? != 0,
-                    has_screenshot: r.get::<_, i32>(10)? != 0,
-                    size_bytes: r.get::<_, i64>(11)? as u64,
-                    archived_at: r.get(12)?,
-                })
-            },
-        )
-        .ok();
-
-    match summary {
-        Some(s) => {
-            let page_dir = get_archive_base_dir(app_dir).join(&s.page_uuid);
-            let markdown_content = if s.has_markdown {
-                fs::read_to_string(page_dir.join("content.md")).ok()
-            } else {
-                None
-            };
-            let snapshot_html = if s.has_snapshot_html {
-                fs::read_to_string(page_dir.join("snapshot.html")).ok()
-            } else {
-                None
-            };
-
-            Ok(Some(PageArchiveDetail {
-                summary: s,
-                markdown_content,
-                snapshot_html,
-            }))
+    let result = conn.query_row(
+        r#"SELECT oa.id, oa.url_id, oa.page_uuid, u.url, COALESCE(oa.title,''), COALESCE(oa.domain,''),
+        oa.archive_level, oa.relative_path, oa.has_markdown, oa.has_snapshot_html, oa.has_screenshot,
+        oa.size_bytes, oa.archived_at, oa.markdown_content, oa.snapshot_html_compressed,
+        length(CAST(oa.markdown_content AS BLOB)), length(oa.snapshot_html_compressed)
+        FROM offline_archives oa JOIN urls u ON oa.url_id=u.id WHERE oa.url_id=?1"#,
+        [url_id], |r| {
+            let markdown_len: Option<u64> = r.get(15)?;
+            let html_len: Option<u64> = r.get(16)?;
+            if markdown_len.unwrap_or(0) > MAX_MARKDOWN_BYTES || html_len.unwrap_or(0) > MAX_COMPRESSED_HTML_BYTES {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            Ok((PageArchiveSummary { id:r.get(0)?, url_id:r.get(1)?, page_uuid:r.get(2)?, url:r.get(3)?,
+                title:r.get(4)?, domain:r.get(5)?, archive_level:r.get(6)?, relative_path:r.get(7)?,
+                has_markdown:r.get::<_,i32>(8)? != 0, has_snapshot_html:r.get::<_,i32>(9)? != 0,
+                has_screenshot:r.get::<_,i32>(10)? != 0, size_bytes:r.get::<_,u64>(11)?, archived_at:r.get(12)? },
+                r.get::<_, Option<String>>(13)?, r.get::<_, Option<Vec<u8>>>(14)?))
+        }).optional()?;
+    let Some((summary, db_markdown, db_html)) = result else {
+        return Ok(None);
+    };
+    validate_uuid(&summary.page_uuid)?;
+    let markdown_content = match db_markdown {
+        Some(text) => Some(text),
+        None if summary.has_markdown => read_legacy_text(
+            app_dir,
+            &summary.page_uuid,
+            "content.md",
+            MAX_MARKDOWN_BYTES,
+        )?,
+        None => None,
+    };
+    let snapshot_html = match db_html {
+        Some(bytes) => Some(decompress_html(&bytes)?),
+        None if summary.has_snapshot_html => {
+            read_legacy_text(app_dir, &summary.page_uuid, "snapshot.html", MAX_HTML_BYTES)?
         }
-        None => Ok(None),
-    }
+        None => None,
+    };
+    Ok(Some(PageArchiveDetail {
+        summary,
+        markdown_content,
+        snapshot_html,
+    }))
 }
 
 pub fn list_offline_archives(
@@ -295,27 +367,21 @@ pub fn list_offline_archives(
         })
     })?;
 
-    Ok(rows.flatten().collect())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::Database)
 }
 
-pub fn delete_offline_archive(app_dir: &Path, conn: &Connection, page_uuid: &str) -> AppResult<()> {
-    let parsed_uuid = Uuid::parse_str(page_uuid)
-        .map_err(|_| crate::error::AppError::Parse("无效的归档 page_uuid".into()))?;
-    let canonical_uuid = parsed_uuid.to_string();
-    if canonical_uuid != page_uuid {
-        return Err(crate::error::AppError::Parse(
-            "归档 page_uuid 必须是标准 UUID 格式".into(),
-        ));
-    }
-
-    let archive_base = get_archive_base_dir(app_dir);
-    let page_dir = archive_base.join(&canonical_uuid);
-    if page_dir.exists() {
-        fs::remove_dir_all(&page_dir)?;
-    }
+pub fn delete_offline_archive(
+    _app_dir: &Path,
+    conn: &Connection,
+    page_uuid: &str,
+) -> AppResult<()> {
+    validate_uuid(page_uuid)?;
+    // Remove the reading entry only. Verified legacy recovery copies and their
+    // source directories need a separate explicit retirement workflow.
     conn.execute(
-        "DELETE FROM offline_archives WHERE page_uuid = ?1",
-        params![canonical_uuid],
+        "DELETE FROM offline_archives WHERE page_uuid=?1",
+        [page_uuid],
     )?;
     Ok(())
 }
@@ -323,102 +389,118 @@ pub fn delete_offline_archive(app_dir: &Path, conn: &Connection, page_uuid: &str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::migrations::run_migrations;
+    use std::fs;
+
+    fn payload(markdown: &str) -> SaveArchivePayload {
+        SaveArchivePayload {
+            url_id: 1,
+            archive_level: "full".into(),
+            markdown: Some(markdown.into()),
+            html: Some("<html>original HTML</html>".into()),
+            title: Some("Original title".into()),
+            author: None,
+        }
+    }
+
+    #[test]
+    fn archive_and_search_writes_are_atomic_and_never_delete_retained_sources() {
+        let root = std::env::temp_dir().join(format!("browsory_archive_atomic_{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let vault = crate::security::vault::VaultManager::unlocked_fixture(root.clone());
+        vault.with_conn(|conn| {
+            conn.execute("INSERT INTO urls(id,url,title,domain) VALUES(1,'https://test.archive','Original title','test.archive')", [])?;
+            let first = save_offline_archive(&root, conn, payload("original markdown"))?;
+            let source = get_archive_base_dir(&root).join(&first.page_uuid); fs::create_dir_all(&source)?;
+            fs::write(source.join("screenshot.png"), b"preserve original screenshot")?;
+            conn.execute_batch("CREATE TRIGGER refuse_archive_update BEFORE UPDATE ON offline_archives BEGIN SELECT RAISE(ABORT,'synthetic archive failure'); END;")?;
+            assert!(save_offline_archive(&root, conn, payload("must roll back index")).is_err());
+            assert_eq!(conn.query_row("SELECT markdown FROM page_contents WHERE url_id=1", [], |r| r.get::<_,String>(0))?, "original markdown");
+            assert_eq!(get_offline_archive(&root, conn, 1)?.unwrap().markdown_content.as_deref(), Some("original markdown"));
+            conn.execute_batch("DROP TRIGGER refuse_archive_update;")?;
+            let mut metadata = payload(""); metadata.markdown=None; metadata.html=None;
+            let saved = save_offline_archive(&root, conn, metadata)?;
+            assert_eq!(saved.id, first.id); assert!(saved.has_markdown && saved.has_snapshot_html);
+            assert_eq!(get_offline_archive(&root, conn, 1)?.unwrap().markdown_content.as_deref(), Some("original markdown"));
+            assert!(source.join("screenshot.png").exists());
+            assert!(delete_offline_archive(&root, conn, "../outside").is_err());
+            delete_offline_archive(&root, conn, &first.page_uuid)?;
+            assert!(source.join("screenshot.png").exists());
+            Ok(())
+        }).unwrap();
+        vault.lock().unwrap();
+        drop(vault);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn malformed_and_expanding_html_are_rejected_with_output_bounds() {
+        let valid = compress_html("<html>hello</html>").unwrap();
+        assert_eq!(decompress_html(&valid).unwrap(), "<html>hello</html>");
+        assert!(decompress_html(&[]).is_err());
+        assert!(decompress_html(&valid[..valid.len() - 1]).is_err());
+        let mut extra = valid;
+        extra.extend_from_slice(b"extra");
+        assert!(decompress_html(&extra).is_err());
+        let large = "x".repeat(MAX_HTML_BYTES as usize + 1);
+        assert!(compress_html(&large).is_err());
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(large.as_bytes()).unwrap();
+        assert!(decompress_html(&encoder.finish().unwrap()).is_err());
+    }
 
     #[test]
     fn test_offline_page_archive_lifecycle() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "browsory_test_archive_{}",
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
-        let _ = fs::create_dir_all(&temp_dir);
-        let mut conn = Connection::open_in_memory().unwrap();
-        run_migrations(&mut conn).unwrap();
+        let temp_dir = std::env::temp_dir().join(format!("browsory_arch_{}", Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("test.db");
+
+        let mut conn = Connection::open(&db_path).unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
 
         conn.execute(
-            "INSERT INTO urls (id, url, title, domain) VALUES (1, 'https://example.com/rust-post', 'Rust Async Cancellation', 'example.com')",
+            "INSERT INTO urls (id, url, title, domain) VALUES (1, 'https://example.com', 'Example', 'example.com');",
             [],
         ).unwrap();
 
         let payload = SaveArchivePayload {
             url_id: 1,
-            archive_level: "snapshot".to_string(),
-            markdown: Some("# Rust Async\nDeep dive into async cancellation tokens.".to_string()),
-            html: Some("<html><body><h1>Rust Async</h1></body></html>".to_string()),
-            title: Some("Rust Async Cancellation".to_string()),
-            author: Some("Ferris".to_string()),
+            archive_level: "full".into(),
+            markdown: Some("# Header\n\nArticle body.".into()),
+            html: Some("<html><body><h1>Header</h1><p>Article body.</p></body></html>".into()),
+            title: Some("Example".into()),
+            author: Some("Author".into()),
         };
 
-        // 1. Save archive
+        // 1. Save archive (stored encrypted in DB)
         let summary = save_offline_archive(&temp_dir, &conn, payload).unwrap();
-        assert_eq!(summary.url_id, 1);
         assert!(summary.has_markdown);
         assert!(summary.has_snapshot_html);
 
-        // 2. Fetch archive
-        let detail = get_offline_archive(&temp_dir, &conn, 1).unwrap().unwrap();
-        assert_eq!(detail.summary.page_uuid, summary.page_uuid);
-        assert!(detail
-            .markdown_content
-            .unwrap()
-            .contains("cancellation tokens"));
-        assert!(detail
-            .snapshot_html
-            .unwrap()
-            .contains("<h1>Rust Async</h1>"));
+        // 2. Verify no plain files were left on disk
+        let page_dir = get_archive_base_dir(&temp_dir).join(&summary.page_uuid);
+        assert!(
+            !page_dir.join("content.md").exists(),
+            "Plain content.md must not exist on disk"
+        );
+        assert!(
+            !page_dir.join("snapshot.html").exists(),
+            "Plain snapshot.html must not exist on disk"
+        );
 
-        let replace_payload = SaveArchivePayload {
-            url_id: 1,
-            archive_level: "content".to_string(),
-            markdown: Some("# Rust Async\nUpdated body.".to_string()),
-            html: None,
-            title: Some("Rust Async Cancellation".to_string()),
-            author: Some("Ferris".to_string()),
-        };
-        let replaced = save_offline_archive(&temp_dir, &conn, replace_payload).unwrap();
-        assert_eq!(replaced.id, summary.id);
-        assert_eq!(replaced.page_uuid, summary.page_uuid);
-        assert!(replaced.has_markdown);
-        assert!(!replaced.has_snapshot_html);
-
-        // 3. Verify FTS table page_contents_fts also has the record
-        let fts_title: String = conn
-            .query_row(
-                "SELECT title FROM page_contents_fts WHERE page_contents_fts MATCH 'Async'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(fts_title, "Rust Async Cancellation");
+        // 3. Read back archive
+        let detail = get_offline_archive(&temp_dir, &conn, 1)
+            .unwrap()
+            .expect("Detail found");
+        assert_eq!(
+            detail.markdown_content.as_deref(),
+            Some("# Header\n\nArticle body.")
+        );
+        assert!(detail.snapshot_html.unwrap().contains("<h1>Header</h1>"));
 
         // 4. Delete archive
         delete_offline_archive(&temp_dir, &conn, &summary.page_uuid).unwrap();
-        let after_delete = get_offline_archive(&temp_dir, &conn, 1).unwrap();
-        assert!(after_delete.is_none());
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn test_delete_rejects_path_traversal_and_noncanonical_uuid() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "browsory_test_archive_path_{}",
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
-        fs::create_dir_all(&temp_dir).unwrap();
-        let mut conn = Connection::open_in_memory().unwrap();
-        run_migrations(&mut conn).unwrap();
-
-        let outside = temp_dir.join("outside");
-        fs::create_dir_all(&outside).unwrap();
-        fs::write(outside.join("keep.txt"), b"keep").unwrap();
-
-        assert!(delete_offline_archive(&temp_dir, &conn, "../outside").is_err());
-        assert!(outside.join("keep.txt").exists());
-        assert!(
-            delete_offline_archive(&temp_dir, &conn, "550E8400-E29B-41D4-A716-446655440000")
-                .is_err()
-        );
+        let deleted = get_offline_archive(&temp_dir, &conn, 1).unwrap();
+        assert!(deleted.is_none());
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

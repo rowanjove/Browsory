@@ -24,6 +24,9 @@ temp/
 
 # Locally generated release artifacts
 release/
+.acceptance-tools/
+src-tauri/redist-runtime/
+src-tauri/tauri.runtime-resources.json
 *.exe
 *.msi
 *.zip
@@ -34,7 +37,5 @@ release/
 .vscode/
 .DS_Store
 Thumbs.db
-temp_user_req.txt
 .tmp*
 *.tmp
-temp/

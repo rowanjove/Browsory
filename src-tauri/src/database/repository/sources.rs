@@ -131,22 +131,62 @@ pub fn update_source_sync(
     last_sync_at: i64,
     db_fingerprint: Option<&str>,
 ) -> AppResult<()> {
-    conn.execute(
-        r#"
-        UPDATE sources
-        SET last_visit_id = MAX(last_visit_id, ?1),
-            last_visit_time = MAX(last_visit_time, ?2),
-            last_sync_at = ?3,
-            db_fingerprint = COALESCE(?5, db_fingerprint)
-        WHERE id = ?4
-        "#,
-        params![
-            last_visit_id,
-            last_visit_time,
-            last_sync_at,
-            source_id,
-            db_fingerprint
-        ],
-    )?;
+    update_source_sync_with_reset(
+        conn,
+        source_id,
+        last_visit_id,
+        last_visit_time,
+        last_sync_at,
+        db_fingerprint,
+        false,
+    )
+}
+
+pub fn update_source_sync_with_reset(
+    conn: &Connection,
+    source_id: i64,
+    last_visit_id: i64,
+    last_visit_time: i64,
+    last_sync_at: i64,
+    db_fingerprint: Option<&str>,
+    reset_visit_id: bool,
+) -> AppResult<()> {
+    if reset_visit_id {
+        conn.execute(
+            r#"
+            UPDATE sources
+            SET last_visit_id = ?1,
+                last_visit_time = MAX(last_visit_time, ?2),
+                last_sync_at = ?3,
+                db_fingerprint = COALESCE(?5, db_fingerprint)
+            WHERE id = ?4
+            "#,
+            params![
+                last_visit_id,
+                last_visit_time,
+                last_sync_at,
+                source_id,
+                db_fingerprint
+            ],
+        )?;
+    } else {
+        conn.execute(
+            r#"
+            UPDATE sources
+            SET last_visit_id = MAX(last_visit_id, ?1),
+                last_visit_time = MAX(last_visit_time, ?2),
+                last_sync_at = ?3,
+                db_fingerprint = COALESCE(?5, db_fingerprint)
+            WHERE id = ?4
+            "#,
+            params![
+                last_visit_id,
+                last_visit_time,
+                last_sync_at,
+                source_id,
+                db_fingerprint
+            ],
+        )?;
+    }
     Ok(())
 }

@@ -23,8 +23,7 @@ impl BrowserAdapter for ArcAdapter {
             .map(|local_app_data| PathBuf::from(local_app_data).join("Arc").join("User Data"))
     }
 
-    fn detect(&self) -> Vec<DiscoveredProfile> {
-        let is_running = self.is_running();
+    fn detect_with_running(&self, is_running: bool) -> Vec<DiscoveredProfile> {
         if let Some(user_data) = self.user_data_dir() {
             detect_chromium_profiles(self.browser_id(), &user_data, is_running)
         } else {

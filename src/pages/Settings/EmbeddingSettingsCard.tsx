@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Brain,
   ChevronDown,
@@ -11,12 +11,19 @@ import {
   Layers,
 } from 'lucide-react';
 import { tauriApi } from '../../services/tauri';
+import { credentialRefForEndpoint, DEFAULT_AI_ENDPOINT } from '../../services/aiCredentials';
+import { AiSettingsSaveError, saveAiSettings } from '../../services/saveAiSettings';
+import { createRequestSequence } from '../../services/requestSequence';
 import { useAppStore } from '../../stores/useAppStore';
 import { EmbeddingIndexingStatus } from '../../types';
 import { PresetManager, PresetItem } from './PresetManager';
 
 export const EmbeddingSettingsCard: React.FC = () => {
-  const { showToast, setCurrentTab } = useAppStore();
+  const { showToast, setCurrentTab, t, language } = useAppStore();
+  const ui = (zh: string, en: string) => (language === 'en-US' ? en : zh);
+  const credentialSequence = useRef(createRequestSequence());
+  const [isCredentialLoading, setIsCredentialLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [isExpanded, setIsExpanded] = useState(true);
   const [embeddingModel, setEmbeddingModel] = useState('text-embedding-3-small');
@@ -35,23 +42,53 @@ export const EmbeddingSettingsCard: React.FC = () => {
   const [isBatchGenerating, setIsBatchGenerating] = useState(false);
 
   const loadSettingsAndStatus = async () => {
+    const request = credentialSequence.current.next();
+    setIsCredentialLoading(true);
     try {
-      const [savedModel, savedBaseUrl, savedKey, savedPresets] = await Promise.all([
+      const [savedModel, savedBaseUrl, savedPresets] = await Promise.all([
         tauriApi.getSetting('ai_embedding_model'),
         tauriApi.getSetting('ai_embedding_base_url'),
-        tauriApi.getSetting('ai_embedding_key'),
         tauriApi.getSetting('ai_presets_embedding'),
       ]);
 
+      if (!credentialSequence.current.isCurrent(request)) return;
       if (savedModel) setEmbeddingModel(savedModel);
       if (savedBaseUrl) setEmbeddingBaseUrl(savedBaseUrl);
-      if (savedKey) setEmbeddingApiKey(savedKey);
+
+      const endpoint = savedBaseUrl?.trim() || DEFAULT_AI_ENDPOINT;
+      const savedKey = await tauriApi.getSetting(await credentialRefForEndpoint(endpoint, 'embedding'));
+      if (!credentialSequence.current.isCurrent(request)) return;
+      setEmbeddingApiKey(savedKey || '');
 
       if (savedPresets) {
         try {
           const parsed = JSON.parse(savedPresets);
           if (Array.isArray(parsed)) {
-            setEmbeddingPresets(parsed.slice(0, 3));
+            let changed = false;
+            const migrated = await Promise.all(parsed.slice(0, 3).map(async (item: PresetItem) => {
+              const baseUrl = (typeof item.baseUrl === 'string' ? item.baseUrl.trim() : '') || DEFAULT_AI_ENDPOINT;
+              const credentialRef = await credentialRefForEndpoint(baseUrl, 'embedding');
+              const next: PresetItem = {
+                id: item.id,
+                name: item.name,
+                model: item.model,
+                baseUrl,
+                credentialRef,
+              };
+              if (item.credentialRef !== credentialRef || item.apiKey !== undefined) changed = true;
+              if (typeof item.apiKey === 'string' && !item.apiKey.includes('•') && item.apiKey.trim()) {
+                try {
+                  await tauriApi.setSetting(credentialRef, item.apiKey);
+                } catch {
+                  next.apiKey = item.apiKey;
+                }
+              }
+              return next;
+            }));
+            setEmbeddingPresets(migrated);
+            if (changed) {
+              await tauriApi.setSetting('ai_presets_embedding', JSON.stringify(migrated));
+            }
           }
         } catch {
           // ignore corrupted JSON
@@ -61,7 +98,11 @@ export const EmbeddingSettingsCard: React.FC = () => {
       const status = await tauriApi.getEmbeddingStatus(savedModel || undefined);
       setIndexingStatus(status);
     } catch (e) {
-      console.warn('Failed to load embedding settings:', e);
+      if (credentialSequence.current.isCurrent(request)) {
+        showToast(typeof e === 'string' ? e : ui('读取向量配置或凭据失败，请重试', 'Failed to load embedding config or credentials; please retry'), 'error');
+      }
+    } finally {
+      if (credentialSequence.current.isCurrent(request)) setIsCredentialLoading(false);
     }
   };
 
@@ -70,16 +111,33 @@ export const EmbeddingSettingsCard: React.FC = () => {
   }, []);
 
   const handleSave = async () => {
+    if (isCredentialLoading || isSaving) return;
+    setIsSaving(true);
     try {
-      await tauriApi.setSetting('ai_embedding_model', embeddingModel.trim());
-      await tauriApi.setSetting('ai_embedding_base_url', embeddingBaseUrl.trim());
-      await tauriApi.setSetting('ai_embedding_key', embeddingApiKey.trim());
-
-      showToast('向量嵌入配置已保存', 'success');
-      const status = await tauriApi.getEmbeddingStatus(embeddingModel.trim());
-      setIndexingStatus(status);
-    } catch (err: any) {
-      showToast(err?.message || '保存向量配置失败', 'error');
+      const endpoint = embeddingBaseUrl.trim() || DEFAULT_AI_ENDPOINT;
+      await saveAiSettings(tauriApi.setSetting, {
+        credentialRef: await credentialRefForEndpoint(endpoint, 'embedding'),
+        apiKey: embeddingApiKey.trim(),
+        baseUrl: endpoint,
+        model: embeddingModel.trim(),
+        embedding: true,
+      });
+      showToast(t('embedding.saved'), 'success');
+      try {
+        setIndexingStatus(await tauriApi.getEmbeddingStatus(embeddingModel.trim()));
+      } catch {
+        showToast(t('embedding.statusLoadFailed'), 'warning');
+      }
+    } catch (error) {
+      const labels = {
+        credential: t('settings.aiFieldCredential'),
+        endpoint: t('settings.aiFieldEndpoint'),
+        model: t('settings.aiFieldModel'),
+      };
+      const confirmed = error instanceof AiSettingsSaveError ? error.confirmedFields.map((field) => labels[field]).join(', ') : '';
+      showToast(confirmed ? t('settings.aiPartlySaved', { fields: confirmed }) : t('settings.aiSaveUnconfirmed'), 'error');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -97,15 +155,15 @@ export const EmbeddingSettingsCard: React.FC = () => {
         message: res.message,
       });
       if (res.success) {
-        showToast('向量端点连接测试成功！', 'success');
+        showToast(t('embedding.connectionSuccess'), 'success');
       }
     } catch (err: any) {
-      const msg = typeof err === 'string' ? err : err?.message || '连接失败，无法访问向量服务';
+      const msg = typeof err === 'string' ? err : err?.message || t('embedding.connectionFailed');
       setTestFeedback({
         type: 'error',
         message: msg,
       });
-      showToast('向量接口测试失败', 'error');
+      showToast(t('embedding.testFailed'), 'error');
     } finally {
       setIsTesting(false);
     }
@@ -115,46 +173,63 @@ export const EmbeddingSettingsCard: React.FC = () => {
     setIsBatchGenerating(true);
     try {
       const count = await tauriApi.generateEmbeddingsBatch(embeddingModel.trim(), 30);
-      showToast(`成功生成并增量保存 ${count} 个页面的向量索引`, 'success');
+      showToast(t('embedding.batchSuccess', { count }), 'success');
       const status = await tauriApi.getEmbeddingStatus(embeddingModel.trim());
       setIndexingStatus(status);
     } catch (err: any) {
-      showToast(typeof err === 'string' ? err : err?.message || '生成向量索引失败，请检查配置', 'error');
+      showToast(typeof err === 'string' ? err : err?.message || t('embedding.batchFailed'), 'error');
     } finally {
       setIsBatchGenerating(false);
     }
   };
 
-  // Preset operations
-  const handleApplyPreset = (preset: PresetItem) => {
+  const handleApplyPreset = async (preset: PresetItem) => {
+    const request = credentialSequence.current.next();
+    setIsCredentialLoading(true);
     if (preset.model) setEmbeddingModel(preset.model);
     if (preset.baseUrl !== undefined) setEmbeddingBaseUrl(preset.baseUrl);
-    if (preset.apiKey !== undefined) setEmbeddingApiKey(preset.apiKey);
+    setEmbeddingApiKey('');
+    try {
+      const key = (await tauriApi.getSetting(
+        await credentialRefForEndpoint(preset.baseUrl.trim() || DEFAULT_AI_ENDPOINT, 'embedding'),
+      )) || '';
+      if (credentialSequence.current.isCurrent(request)) setEmbeddingApiKey(key);
+    } catch (err: any) {
+      if (credentialSequence.current.isCurrent(request)) {
+        showToast(typeof err === 'string' ? err : ui('读取向量预设凭据失败，请重试', 'Failed to load preset credentials; please retry'), 'error');
+      }
+    } finally {
+      if (credentialSequence.current.isCurrent(request)) setIsCredentialLoading(false);
+    }
     setTestFeedback(null);
   };
 
   const handleAddPreset = async (preset: PresetItem) => {
     if (embeddingPresets.length >= 3) {
-      showToast('向量预设最多允许添加 3 个', 'warning');
+      showToast(t('embedding.maxPresets'), 'warning');
       return;
+    }
+    if (embeddingApiKey && !embeddingApiKey.includes('•')) {
+      const credentialRef = preset.credentialRef || await credentialRefForEndpoint(preset.baseUrl, 'embedding');
+      await tauriApi.setSetting(credentialRef, embeddingApiKey);
     }
     const next = [...embeddingPresets, preset].slice(0, 3);
     setEmbeddingPresets(next);
     await tauriApi.setSetting('ai_presets_embedding', JSON.stringify(next));
-    showToast(`已保存向量预设「${preset.name}」`, 'success');
+    showToast(t('embedding.presetSaved', { name: preset.name }), 'success');
   };
 
   const handleDeletePreset = async (index: number) => {
     const next = embeddingPresets.filter((_, i) => i !== index);
     setEmbeddingPresets(next);
     await tauriApi.setSetting('ai_presets_embedding', JSON.stringify(next));
-    showToast('预设已删除', 'info');
+    showToast(t('embedding.presetDeleted'), 'info');
   };
 
   const indexedCount = indexingStatus?.indexed_urls ?? 0;
   const unindexedCount = indexingStatus?.pending_urls ?? 0;
   const totalCount = indexingStatus?.total_urls ?? (indexedCount + unindexedCount);
-  const percent = totalCount > 0 ? Math.round((indexedCount / totalCount) * 100) : 0;
+  const percent = totalCount > 0 ? Math.min(100, Math.max(0, Math.round((indexedCount / totalCount) * 100))) : 0;
 
   return (
     <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden transition-all">
@@ -162,44 +237,46 @@ export const EmbeddingSettingsCard: React.FC = () => {
       <button
         type="button"
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full px-4 py-3 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50 hover:bg-slate-100/70 dark:hover:bg-slate-750 transition-colors cursor-pointer text-left"
+        className="w-full px-5 py-4 flex items-center justify-between bg-slate-50/50 dark:bg-slate-800/50 hover:bg-slate-100/70 dark:hover:bg-slate-700 transition-colors cursor-pointer text-left"
       >
-        <div className="flex items-center gap-2.5">
-          <Brain className="w-4 h-4 text-emerald-500 shrink-0" />
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+            <Brain className="w-5 h-5 shrink-0" />
+          </div>
           <div className="flex flex-col">
             <div className="flex items-center gap-2">
-              <span className="font-semibold text-slate-800 dark:text-slate-100">
-                向量嵌入与语义检索配置
+              <span className="font-semibold text-sm text-slate-800 dark:text-slate-100">
+                {t('embedding.title')}
               </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 font-mono">
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 font-mono">
                 {embeddingModel}
               </span>
             </div>
-            <span className="text-[11px] text-slate-500 font-mono mt-0.5 truncate max-w-sm">
-              驱动混合搜索与相似网页推荐 · 已索引 {indexedCount}/{totalCount} 页 ({percent}%)
+            <span className="text-xs text-slate-500 font-mono mt-0.5 truncate max-w-md">
+              {t('embedding.summary', { indexed: indexedCount, total: totalCount, percent })}
             </span>
           </div>
         </div>
 
         <div className="flex items-center gap-2 text-slate-400">
-          <span className="text-[11px]">{isExpanded ? '收起' : '展开配置'}</span>
+          <span className="text-xs">{isExpanded ? t('embedding.collapse') : t('embedding.expand')}</span>
           {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </div>
       </button>
 
       {/* Expanded Body */}
       {isExpanded && (
-        <div className="p-4 border-t border-slate-200 dark:border-slate-700/80 flex flex-col gap-4 animate-in fade-in-50 duration-150">
+        <div className="p-5 border-t border-slate-200 dark:border-slate-700/80 flex flex-col gap-4 animate-in fade-in-50 duration-150">
           {/* Embedding Status Progress Banner */}
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800 flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Layers className="w-4 h-4 text-blue-500 shrink-0" />
                 <span className="font-medium text-slate-700 dark:text-slate-200 text-xs">
-                  本地向量库覆盖状态
+                  {t('embedding.coverage')}
                 </span>
                 <span className="text-[11px] text-slate-400 font-mono">
-                  (模型: {embeddingModel})
+                  ({ui(`模型: ${embeddingModel}`, `Model: ${embeddingModel}`)})
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -207,12 +284,11 @@ export const EmbeddingSettingsCard: React.FC = () => {
                   {percent}%
                 </span>
                 <span className="text-[11px] text-slate-400">
-                  ({indexedCount} / {totalCount} 条)
+                  {t('embedding.records', { indexed: indexedCount, total: totalCount })}
                 </span>
               </div>
             </div>
 
-            {/* Progress Bar */}
             <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-full overflow-hidden">
               <div
                 className="h-full bg-emerald-500 rounded-full transition-all duration-300"
@@ -220,11 +296,11 @@ export const EmbeddingSettingsCard: React.FC = () => {
               />
             </div>
 
-            <div className="flex items-center justify-between pt-1 text-[11px] text-slate-500">
+            <div className="flex items-center justify-between pt-1 text-xs text-slate-500">
               <span>
-                待向量化页面: <strong className="text-slate-700 dark:text-slate-300 font-mono">{unindexedCount}</strong> 个
+                {t('embedding.pending')} <strong className="text-slate-700 dark:text-slate-300 font-mono">{unindexedCount}</strong>
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
                 {unindexedCount > 0 && (
                   <button
                     type="button"
@@ -233,7 +309,7 @@ export const EmbeddingSettingsCard: React.FC = () => {
                     className="flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:underline cursor-pointer disabled:opacity-50"
                   >
                     {isBatchGenerating && <Loader2 className="w-3 h-3 animate-spin" />}
-                    <span>增量索引 30 条</span>
+                    <span>{t('embedding.incremental')}</span>
                   </button>
                 )}
                 <button
@@ -241,101 +317,107 @@ export const EmbeddingSettingsCard: React.FC = () => {
                   onClick={() => setCurrentTab('ai')}
                   className="flex items-center gap-1 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 cursor-pointer"
                 >
-                  <span>前往 AI 助手</span>
+                  <span>{t('embedding.goAi')}</span>
                   <ArrowRight className="w-3 h-3" />
                 </button>
               </div>
             </div>
           </div>
 
-          {/* Quick Presets (Default empty, max 3) */}
           <PresetManager
-            label="向量预设:"
+            label={t('embedding.presets')}
             presets={embeddingPresets}
             onApply={handleApplyPreset}
             onAdd={handleAddPreset}
             onDelete={handleDeletePreset}
             currentModel={embeddingModel}
             currentBaseUrl={embeddingBaseUrl}
-            currentApiKey={embeddingApiKey}
+            credentialScope="embedding"
             maxCount={3}
           />
 
-          {/* Model Name Input */}
           <div className="flex flex-col gap-1">
-            <label className="text-slate-600 dark:text-slate-400 flex items-center justify-between">
-              <span className="font-medium">向量模型名称 (Embedding Model)</span>
-              <span className="text-[10px] text-slate-400 font-mono">用于计算文本余弦相似度的模型标识符</span>
+            <label className="text-slate-600 dark:text-slate-400 text-xs flex items-center justify-between">
+              <span className="font-medium">{t('embedding.model')}</span>
+              <span className="text-[11px] text-slate-400 font-mono">{t('embedding.modelHelp')}</span>
             </label>
             <input
               type="text"
               value={embeddingModel}
               onChange={(e) => setEmbeddingModel(e.target.value)}
-              placeholder="例如 text-embedding-3-small、nomic-embed-text、bge-m3"
-              className="px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
+              placeholder={t('embedding.modelPlaceholder')}
+              className="px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono text-xs focus:outline-none focus:border-blue-500"
             />
           </div>
 
-          {/* Independent Base URL & API Key */}
-          <div className="flex flex-col gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-900/30">
+          <div className="flex flex-col gap-3 p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-900/30">
             <div className="flex flex-col gap-1">
-              <label className="text-slate-600 dark:text-slate-400 flex items-center justify-between">
-                <span className="font-medium">向量服务 Base URL</span>
-                <span className="text-[10px] text-slate-400 font-mono">标准 /embeddings 端点</span>
+              <label className="text-slate-600 dark:text-slate-400 text-xs flex items-center justify-between">
+                <span className="font-medium">{t('embedding.baseUrl')}</span>
+                <span className="text-[11px] text-slate-400 font-mono">{t('embedding.baseUrlHelp')}</span>
               </label>
               <input
                 type="text"
                 value={embeddingBaseUrl}
-                onChange={(e) => setEmbeddingBaseUrl(e.target.value)}
-                placeholder="例如 https://api.openai.com/v1 或 http://localhost:11434/v1"
-                className="px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
+                onChange={(e) => {
+                  credentialSequence.current.next();
+                  setIsCredentialLoading(false);
+                  setEmbeddingBaseUrl(e.target.value);
+                  setEmbeddingApiKey('');
+                }}
+                placeholder={t('embedding.baseUrlPlaceholder')}
+                className="px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono text-xs focus:outline-none focus:border-blue-500"
               />
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-slate-600 dark:text-slate-400 flex items-center justify-between">
-                <span className="font-medium">向量服务 API Key</span>
-                <span className="text-[10px] text-slate-400 font-mono">本地 Ollama/LM Studio 等可留空</span>
+              <label className="text-slate-600 dark:text-slate-400 text-xs flex items-center justify-between">
+                <span className="font-medium">{t('embedding.apiKey')}</span>
+                <span className="text-[11px] text-slate-400 font-mono">{t('embedding.apiKeyHelp')}</span>
               </label>
               <input
                 type="password"
                 value={embeddingApiKey}
-                onChange={(e) => setEmbeddingApiKey(e.target.value)}
-                placeholder="sk-...（本地模型留空）"
-                className="px-2.5 py-1.5 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono text-xs focus:outline-none focus:border-emerald-500"
+                onChange={(e) => {
+                  credentialSequence.current.next();
+                  setIsCredentialLoading(false);
+                  setEmbeddingApiKey(e.target.value);
+                }}
+                placeholder={t('embedding.apiKeyPlaceholder')}
+                className="px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono text-xs focus:outline-none focus:border-blue-500"
               />
             </div>
           </div>
 
-          {/* Actions & Test Button */}
           <div className="flex items-center gap-3 pt-1">
             <button
               type="button"
               onClick={handleSave}
-              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded font-medium transition shadow-sm cursor-pointer"
+              disabled={isCredentialLoading || isSaving}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition shadow-xs text-xs cursor-pointer disabled:opacity-50"
             >
-              保存向量配置
+              {t('embedding.save')}
             </button>
 
             <button
               type="button"
               onClick={handleTestConnection}
-              disabled={isTesting}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition disabled:opacity-50 cursor-pointer"
+              disabled={isTesting || isCredentialLoading || isSaving}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs transition disabled:opacity-50 cursor-pointer"
             >
               {isTesting ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
-                <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
+                <Sparkles className="w-3.5 h-3.5 text-blue-500" />
               )}
-              <span>{isTesting ? '正在测试向量接口...' : '测试向量连接'}</span>
+              <span>{isTesting ? t('embedding.testing') : t('embedding.test')}</span>
             </button>
           </div>
 
-          {/* Test Feedback */}
           {testFeedback && (
             <div
-              className={`p-3 rounded text-xs flex items-start gap-2 border ${
+              role="status"
+              className={`p-3 rounded-xl text-xs flex items-start gap-2 border ${
                 testFeedback.type === 'success'
                   ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900'
                   : 'bg-rose-50 text-rose-800 dark:bg-rose-950/40 dark:text-rose-300 border-rose-200 dark:border-rose-900'
@@ -348,9 +430,9 @@ export const EmbeddingSettingsCard: React.FC = () => {
               )}
               <div className="flex flex-col gap-0.5">
                 <span className="font-semibold">
-                  {testFeedback.type === 'success' ? '向量端点测试通过' : '向量端点测试失败'}
+                  {testFeedback.type === 'success' ? t('embedding.testSuccess') : t('embedding.testFailure')}
                 </span>
-                <span className="text-[11px] leading-relaxed break-all select-text">
+                <span className="text-xs leading-relaxed break-all select-text">
                   {testFeedback.message}
                 </span>
               </div>

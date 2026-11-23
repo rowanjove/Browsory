@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod archive;
+pub mod auto_sync;
 pub mod browser;
 pub mod commands;
 pub mod database;
@@ -7,7 +8,6 @@ pub mod diagnostics;
 pub mod error;
 pub mod export;
 pub mod history;
-pub mod license;
 pub mod logging;
 pub mod process;
 pub mod security;
@@ -18,11 +18,16 @@ use commands::archive::{
     cancel_background_job, delete_offline_archive, get_offline_archive, list_background_jobs,
     list_offline_archives, save_offline_archive,
 };
-use commands::license::{activate_license, deactivate_license, get_license_info};
 
 use commands::ai::{
     generate_ai_period_comparison, generate_embeddings_batch, get_all_topics, get_embedding_status,
     get_interest_evolution, get_similar_pages, hybrid_search,
+};
+use commands::archive_files::{export_archive_file, list_archive_files, preview_archive_file};
+use commands::archive_retirement::{list_legacy_archive_sources, retire_legacy_archive_source};
+use commands::auto_sync::{
+    get_auto_sync_status, list_auto_sync_runs, repair_auto_sync_task, run_auto_sync_now,
+    update_auto_sync_config,
 };
 use commands::browser::{
     check_browser_running, import_history_batch, import_history_file, kill_browser,
@@ -37,10 +42,15 @@ use commands::history::{
     list_smart_collections, list_tags, remove_tag_from_url, toggle_favorite,
 };
 use commands::security::{
-    add_privacy_rule, check_database_integrity, create_database_backup, delete_backup,
-    delete_privacy_rule, disable_pin, export_database_backup, get_security_state, list_backups,
-    list_privacy_rules, reset_pin_with_recovery_key, restore_database_backup, set_or_change_pin,
-    toggle_privacy_rule, update_security_options, vacuum_database, verify_pin, verify_recovery_key,
+    add_privacy_rule, change_vault_password, check_database_integrity, confirm_vault_recovery_key,
+    create_database_backup, create_vault, delete_backup, delete_privacy_rule, disable_pin,
+    export_database_backup, get_plaintext_residue, get_security_state, get_vault_status,
+    list_backups, list_privacy_rules, lock_vault, migrate_legacy_database,
+    regenerate_passive_vault_recovery_key, regenerate_vault_recovery_key,
+    reset_pin_with_recovery_key, restore_database_backup, restore_database_backup_file,
+    resume_passive_vault, retire_legacy_plaintext_backup, set_or_change_pin, toggle_privacy_rule,
+    unlock_vault, unlock_vault_with_recovery_key, update_security_options, vacuum_database,
+    verify_pin, verify_recovery_key,
 };
 use commands::settings::{
     call_ai_completion, check_for_updates, get_app_info, get_setting, quit_application,
@@ -55,14 +65,14 @@ use database::init_database;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 0. Initialize app directories and rolling logging
-    let (_app_dir, _, logs_dir, _) = match database::connection::get_app_directories() {
-        Ok(dirs) => dirs,
+    let db_state = match init_database() {
+        Ok(state) => state,
         Err(e) => {
             eprintln!("Failed to initialize app directories: {}", e);
             return;
         }
     };
-    let _log_guard = logging::setup_logging(&logs_dir);
+    let _log_guard = logging::setup_logging(&db_state.logs_dir);
 
     // 1. Permanently bypass Windows system proxy (Clash, VPN, etc.) for loopback and tauri internal protocols
     #[cfg(target_os = "windows")]
@@ -100,8 +110,6 @@ pub fn run() {
         }
     }
 
-    let db_state = init_database().expect("Failed to initialize SQLite archive database");
-
     // Initialize intelligent background History file watcher & periodic fallback sweep
     match history::watcher::start_history_watcher(db_state.clone()) {
         Ok(_handle) => {
@@ -114,18 +122,28 @@ pub fn run() {
         }
     }
 
-    // Milestone D: Run automated database backup check in background
+    // Milestone D: Run post-unlock lifecycle checks (automated backup & legacy cleanup) on passive startup
     let db_backup_state = db_state.clone();
     std::thread::spawn(move || {
         // Wait 4 seconds for UI startup and initial read-locks to settle
         std::thread::sleep(std::time::Duration::from_secs(4));
-        commands::security::check_and_run_auto_backup(&db_backup_state);
+        if db_backup_state.vault.is_unlocked() {
+            commands::security::post_unlock_lifecycle(&db_backup_state);
+        }
     });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            use tauri::Manager;
+            history::watcher::set_app_events(app.handle().clone());
+            match security::power::install(app.handle().clone()) {
+                Ok(subscription) => {
+                    app.manage::<security::power::PowerSubscription>(subscription);
+                }
+                Err(error) => tracing::warn!("Native sleep locking is unavailable: {error}"),
+            }
             // Setup system tray
             if let Err(e) = tray::setup_tray(app.handle()) {
                 tracing::warn!("Failed to setup system tray: {}", e);
@@ -139,10 +157,15 @@ pub fn run() {
                 let behavior = window
                     .try_state::<database::DbState>()
                     .and_then(|db| {
-                        let conn = db.conn.lock().ok()?;
-                        database::repository::get_setting(&conn, "close_behavior")
-                            .ok()
-                            .flatten()
+                        db.get_connection().ok().and_then(|handle| {
+                            // If the database is busy, show the close dialog
+                            // instead of blocking the native window event loop.
+                            handle.try_lock().ok().flatten().and_then(|conn| {
+                                database::repository::get_setting(&conn, "close_behavior")
+                                    .ok()
+                                    .flatten()
+                            })
+                        })
                     })
                     .unwrap_or_default();
                 match behavior.as_str() {
@@ -181,6 +204,19 @@ pub fn run() {
             check_for_updates,
             call_ai_completion,
             test_ai_connection,
+            get_vault_status,
+            get_plaintext_residue,
+            retire_legacy_plaintext_backup,
+            create_vault,
+            unlock_vault,
+            resume_passive_vault,
+            unlock_vault_with_recovery_key,
+            lock_vault,
+            change_vault_password,
+            confirm_vault_recovery_key,
+            regenerate_vault_recovery_key,
+            regenerate_passive_vault_recovery_key,
+            migrate_legacy_database,
             get_security_state,
             verify_pin,
             set_or_change_pin,
@@ -194,6 +230,7 @@ pub fn run() {
             list_backups,
             delete_backup,
             restore_database_backup,
+            restore_database_backup_file,
             export_database_backup,
             verify_recovery_key,
             reset_pin_with_recovery_key,
@@ -230,16 +267,23 @@ pub fn run() {
             get_storage_breakdown,
             clean_storage_cache,
             save_offline_archive,
+            list_archive_files,
+            preview_archive_file,
+            export_archive_file,
+            list_legacy_archive_sources,
+            retire_legacy_archive_source,
             get_offline_archive,
             list_offline_archives,
             delete_offline_archive,
             list_background_jobs,
             cancel_background_job,
-            activate_license,
-            get_license_info,
-            deactivate_license,
             test_webdav_sync,
             execute_webdav_sync,
+            get_auto_sync_status,
+            update_auto_sync_config,
+            run_auto_sync_now,
+            repair_auto_sync_task,
+            list_auto_sync_runs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

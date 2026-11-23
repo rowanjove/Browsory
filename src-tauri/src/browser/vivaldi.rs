@@ -26,8 +26,7 @@ impl BrowserAdapter for VivaldiAdapter {
         })
     }
 
-    fn detect(&self) -> Vec<DiscoveredProfile> {
-        let is_running = self.is_running();
+    fn detect_with_running(&self, is_running: bool) -> Vec<DiscoveredProfile> {
         if let Some(user_data) = self.user_data_dir() {
             detect_chromium_profiles(self.browser_id(), &user_data, is_running)
         } else {

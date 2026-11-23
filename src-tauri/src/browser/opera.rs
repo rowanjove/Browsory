@@ -26,8 +26,7 @@ impl BrowserAdapter for OperaAdapter {
         })
     }
 
-    fn detect(&self) -> Vec<DiscoveredProfile> {
-        let is_running = self.is_running();
+    fn detect_with_running(&self, is_running: bool) -> Vec<DiscoveredProfile> {
         let mut profiles = Vec::new();
 
         // 1. Standard Opera Stable
@@ -45,8 +44,7 @@ impl BrowserAdapter for OperaAdapter {
                 .join("Opera Software")
                 .join("Opera GX Stable");
             if gx_dir.exists() {
-                let gx_running = crate::process::is_process_running("opera.exe");
-                let mut gx_profiles = detect_chromium_profiles("operagx", &gx_dir, gx_running);
+                let mut gx_profiles = detect_chromium_profiles("operagx", &gx_dir, is_running);
                 for p in &mut gx_profiles {
                     p.profile_name = format!("Opera GX ({})", p.profile_name);
                 }

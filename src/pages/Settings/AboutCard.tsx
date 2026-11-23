@@ -13,7 +13,7 @@ import { tauriApi } from '../../services/tauri';
 import { useAppStore } from '../../stores/useAppStore';
 
 export const AboutCard: React.FC = () => {
-  const { openChangelog, appVersion, showToast } = useAppStore();
+  const { openChangelog, appVersion, showToast, t } = useAppStore();
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   return (
@@ -25,7 +25,7 @@ export const AboutCard: React.FC = () => {
           <div className="flex flex-col">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-base font-bold text-slate-900 dark:text-slate-100">
-                Browsory 浏览足迹
+                {t('about.product')}
               </span>
               <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-950/80 dark:text-blue-300 font-semibold border border-blue-200 dark:border-blue-800">
                 v{appVersion}
@@ -35,7 +35,7 @@ export const AboutCard: React.FC = () => {
               </span>
             </div>
             <span className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              本地优先的多浏览器历史记录归档与智能分析工具
+              {t('about.subtitle')}
             </span>
           </div>
         </div>
@@ -48,15 +48,15 @@ export const AboutCard: React.FC = () => {
               try {
                 const result = await tauriApi.checkForUpdates();
                 if (result.update_available && result.latest_version) {
-                  showToast(`发现新版本 ${result.latest_version}，正在打开发布页`, 'success');
+                  showToast(t('about.newVersion', { version: result.latest_version }), 'success');
                   if (result.release_url) {
                     await tauriApi.openExternalUrl(result.release_url);
                   }
                 } else {
-                  showToast(`当前已是最新版本 v${result.current_version}`, 'info');
+                  showToast(t('about.latestVersion', { version: result.current_version }), 'info');
                 }
               } catch (err: any) {
-                showToast(typeof err === 'string' ? err : '检查更新失败', 'error');
+                showToast(typeof err === 'string' ? err : t('about.updateFailed'), 'error');
               } finally {
                 setCheckingUpdate(false);
               }
@@ -65,7 +65,7 @@ export const AboutCard: React.FC = () => {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-medium transition cursor-pointer disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${checkingUpdate ? 'animate-spin' : ''}`} />
-            <span>{checkingUpdate ? '检查中...' : '检查更新'}</span>
+            <span>{checkingUpdate ? t('about.checkingUpdates') : t('about.checkUpdates')}</span>
           </button>
 
           <button
@@ -74,16 +74,16 @@ export const AboutCard: React.FC = () => {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/60 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 text-xs font-medium transition cursor-pointer"
           >
             <Info className="w-3.5 h-3.5" />
-            <span>版本更新说明</span>
+            <span>{t('about.changelog')}</span>
           </button>
 
           <button
             type="button"
-            onClick={() => tauriApi.openExternalUrl('https://github.com/rowanjove/browsory')}
+            onClick={() => tauriApi.openExternalUrl('https://github.com/rowanjove/Browsory')}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-medium transition cursor-pointer"
           >
             <Github className="w-3.5 h-3.5" />
-            <span>GitHub 仓库</span>
+            <span>{t('about.github')}</span>
             <ExternalLink className="w-3 h-3 text-slate-400" />
           </button>
         </div>
@@ -91,48 +91,48 @@ export const AboutCard: React.FC = () => {
 
       {/* 设计原则与核心优势 */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-        <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-850/60 border border-slate-100 dark:border-slate-800/80 flex flex-col justify-between gap-2">
+        <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800/80 flex flex-col justify-between gap-2">
           <div className="space-y-1.5">
             <div className="flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-200">
               <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
-              <span>完全本地，离线可控</span>
+              <span>{t('about.localTitle')}</span>
             </div>
             <p className="text-slate-500 dark:text-slate-400 leading-relaxed text-[11px]">
-              所有足迹数据只保存在本机的 SQLite 数据库中，不设云端同步，无数据采集与隐私上传。
+              {t('about.localDescription')}
             </p>
           </div>
           <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-            Local-First 隐私基石
+            {t('about.localBadge')}
           </span>
         </div>
 
-        <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-850/60 border border-slate-100 dark:border-slate-800/80 flex flex-col justify-between gap-2">
+        <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800/80 flex flex-col justify-between gap-2">
           <div className="space-y-1.5">
             <div className="flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-200">
               <Database className="w-4 h-4 text-blue-500 shrink-0" />
-              <span>多浏览器自动聚合</span>
+              <span>{t('about.aggregateTitle')}</span>
             </div>
             <p className="text-slate-500 dark:text-slate-400 leading-relaxed text-[11px]">
-              支持 Chrome、Edge、Brave、Vivaldi 等主流浏览器，自动识别多 Profile 并实现统一快照导入与去重。
+              {t('about.aggregateDescription')}
             </p>
           </div>
           <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium">
-            全域足迹统一管理
+            {t('about.aggregateBadge')}
           </span>
         </div>
 
-        <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-850/60 border border-slate-100 dark:border-slate-800/80 flex flex-col justify-between gap-2">
+        <div className="p-4 rounded-xl bg-slate-50/80 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800/80 flex flex-col justify-between gap-2">
           <div className="space-y-1.5">
             <div className="flex items-center gap-2 font-semibold text-slate-800 dark:text-slate-200">
               <Clock className="w-4 h-4 text-purple-500 shrink-0" />
-              <span>毫秒级 FTS5 检索</span>
+              <span>{t('about.searchTitle')}</span>
             </div>
             <p className="text-slate-500 dark:text-slate-400 leading-relaxed text-[11px]">
-              基于 SQLite 内置全文索引引擎，即使数万条访问记录也能瞬间完成标题与 URL 实时过滤。
+              {t('about.searchDescription')}
             </p>
           </div>
           <span className="text-[10px] text-purple-600 dark:text-purple-400 font-medium">
-            极速全文索引
+            {t('about.searchBadge')}
           </span>
         </div>
       </div>

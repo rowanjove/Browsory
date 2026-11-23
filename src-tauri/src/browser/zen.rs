@@ -35,8 +35,7 @@ impl BrowserAdapter for ZenAdapter {
         })
     }
 
-    fn detect(&self) -> Vec<DiscoveredProfile> {
-        let is_running = self.is_running();
+    fn detect_with_running(&self, is_running: bool) -> Vec<DiscoveredProfile> {
         if let Some(base_dir) = self.user_data_dir() {
             detect_firefox_profiles(self.browser_id(), &base_dir, is_running)
         } else {

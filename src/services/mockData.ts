@@ -191,7 +191,7 @@ export const mockAnalytics: AnalyticsSummary = {
 };
 
 export const mockAppInfo: AppInfo = {
-  version: '0.1.2',
+  version: '0.2.0',
   is_portable: false,
   app_dir: 'C:\\Users\\MockUser\\AppData\\Local\\com.browsory.desktop',
   db_path: 'C:\\Users\\MockUser\\AppData\\Local\\com.browsory.desktop\\browsory.db',
@@ -202,6 +202,7 @@ export const mockAppInfo: AppInfo = {
 
 export const mockSecurityState: SecurityState = {
   pin_enabled: false,
+  pin_migration_needed: false,
   auto_lock_minutes: 15,
   lock_on_minimize: false,
   lock_on_sleep: true,

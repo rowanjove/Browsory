@@ -1,5 +1,35 @@
+use crate::ai::http::{
+    read_response_body_limited, read_response_text_limited, MAX_AI_RESPONSE_BYTES,
+};
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
+
+pub const MAX_EMBEDDING_BATCH_SIZE: usize = 100;
+pub const MAX_EMBEDDING_DIMENSION: usize = 8192;
+pub const MAX_EMBEDDING_TOTAL_ELEMENTS: usize = 1_000_000;
+pub const MAX_EMBEDDING_RESULT_LIMIT: usize = 100;
+
+pub fn validate_embedding_batch_size(value: Option<usize>) -> AppResult<usize> {
+    let batch_size = value.unwrap_or(20);
+    if batch_size == 0 || batch_size > MAX_EMBEDDING_BATCH_SIZE {
+        return Err(AppError::Other(format!(
+            "Embedding 批大小必须在 1 到 {} 之间",
+            MAX_EMBEDDING_BATCH_SIZE
+        )));
+    }
+    Ok(batch_size)
+}
+
+pub fn validate_embedding_result_limit(value: Option<usize>, default: usize) -> AppResult<usize> {
+    let limit = value.unwrap_or(default);
+    if limit == 0 || limit > MAX_EMBEDDING_RESULT_LIMIT {
+        return Err(AppError::Other(format!(
+            "Embedding 查询 limit 必须在 1 到 {} 之间",
+            MAX_EMBEDDING_RESULT_LIMIT
+        )));
+    }
+    Ok(limit)
+}
 
 pub fn floats_to_bytes(floats: &[f32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(floats.len() * 4);
@@ -74,6 +104,12 @@ pub async fn fetch_embeddings(
     if texts.is_empty() {
         return Ok(Vec::new());
     }
+    if texts.len() > MAX_EMBEDDING_BATCH_SIZE {
+        return Err(AppError::Other(format!(
+            "Embedding 输入批次超过 {} 条上限",
+            MAX_EMBEDDING_BATCH_SIZE
+        )));
+    }
 
     let trimmed_base = base_url.trim().trim_end_matches('/');
     let endpoint = if trimmed_base.ends_with("/embeddings") {
@@ -82,9 +118,7 @@ pub async fn fetch_embeddings(
         format!("{}/embeddings", trimmed_base)
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
+    let client = crate::ai::http::ai_client(trimmed_base, std::time::Duration::from_secs(60))
         .map_err(|e| AppError::Other(format!("创建 HTTP 客户端失败: {}", e)))?;
 
     let req_body = EmbeddingRequest {
@@ -104,21 +138,21 @@ pub async fn fetch_embeddings(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let err_text = resp.text().await.unwrap_or_default();
+        let err_text = read_response_text_limited(resp, MAX_AI_RESPONSE_BYTES)
+            .await
+            .unwrap_or_else(|e| e);
         return Err(AppError::Other(format!(
             "向量接口错误 (HTTP {}): {}",
             status, err_text
         )));
     }
 
-    let mut parsed: EmbeddingResponse = resp
-        .json()
+    let body = read_response_body_limited(resp, MAX_AI_RESPONSE_BYTES)
         .await
+        .map_err(AppError::Other)?;
+    let parsed: EmbeddingResponse = serde_json::from_slice(&body)
         .map_err(|e| AppError::Other(format!("向量响应解析失败: {}", e)))?;
-
-    // Sort by original index to ensure ordering matches texts
-    parsed.data.sort_by_key(|item| item.index);
-    let result: Vec<Vec<f32>> = parsed.data.into_iter().map(|item| item.embedding).collect();
+    let result = validate_embedding_items(parsed.data, texts.len())?;
 
     if result.len() != texts.len() {
         return Err(AppError::Other(format!(
@@ -129,6 +163,82 @@ pub async fn fetch_embeddings(
     }
 
     Ok(result)
+}
+
+fn validate_embedding_items(
+    items: Vec<EmbeddingItem>,
+    expected_count: usize,
+) -> AppResult<Vec<Vec<f32>>> {
+    if items.len() != expected_count {
+        return Err(AppError::Other(format!(
+            "返回向量数量 ({}) 与输入文本数量 ({}) 不一致",
+            items.len(),
+            expected_count
+        )));
+    }
+
+    let mut ordered: Vec<Option<Vec<f32>>> = (0..expected_count).map(|_| None).collect();
+    let mut expected_dimension: Option<usize> = None;
+    let mut total_elements = 0usize;
+
+    for item in items {
+        if item.index >= expected_count {
+            return Err(AppError::Other(format!(
+                "向量 index {} 超出输入范围 (0..{})",
+                item.index, expected_count
+            )));
+        }
+        if ordered[item.index].is_some() {
+            return Err(AppError::Other(format!(
+                "向量响应包含重复 index {}",
+                item.index
+            )));
+        }
+
+        let dimension = item.embedding.len();
+        if dimension == 0 || dimension > MAX_EMBEDDING_DIMENSION {
+            return Err(AppError::Other(format!(
+                "向量维度 {} 无效，必须在 1 到 {} 之间",
+                dimension, MAX_EMBEDDING_DIMENSION
+            )));
+        }
+        if let Some(previous) = expected_dimension {
+            if previous != dimension {
+                return Err(AppError::Other(format!(
+                    "向量维度不一致 ({} 与 {})",
+                    previous, dimension
+                )));
+            }
+        } else {
+            expected_dimension = Some(dimension);
+        }
+
+        total_elements = total_elements
+            .checked_add(dimension)
+            .ok_or_else(|| AppError::Other("向量总元素数量溢出".into()))?;
+        if total_elements > MAX_EMBEDDING_TOTAL_ELEMENTS {
+            return Err(AppError::Other(format!(
+                "向量总元素数量超过 {} 上限",
+                MAX_EMBEDDING_TOTAL_ELEMENTS
+            )));
+        }
+        if item.embedding.iter().any(|value| !value.is_finite()) {
+            return Err(AppError::Other(format!(
+                "向量 index {} 包含非有限数值",
+                item.index
+            )));
+        }
+
+        ordered[item.index] = Some(item.embedding);
+    }
+
+    ordered
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| {
+            item.ok_or_else(|| AppError::Other(format!("向量响应缺少 index {}", index)))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -175,5 +285,82 @@ mod tests {
         assert!(s4 > s2);
         let s5 = rrf_score(Some(100), None, 60.0);
         assert!(s2 > s5);
+    }
+
+    #[test]
+    fn rejects_duplicate_out_of_range_and_non_finite_vectors() {
+        let duplicate = vec![
+            EmbeddingItem {
+                index: 0,
+                embedding: vec![1.0],
+            },
+            EmbeddingItem {
+                index: 0,
+                embedding: vec![2.0],
+            },
+        ];
+        assert!(validate_embedding_items(duplicate, 2).is_err());
+
+        let out_of_range = vec![EmbeddingItem {
+            index: 2,
+            embedding: vec![1.0],
+        }];
+        assert!(validate_embedding_items(out_of_range, 1).is_err());
+
+        let non_finite = vec![EmbeddingItem {
+            index: 0,
+            embedding: vec![f32::NAN],
+        }];
+        assert!(validate_embedding_items(non_finite, 1).is_err());
+    }
+
+    #[test]
+    fn orders_valid_vectors_and_rejects_dimension_mismatch() {
+        let items = vec![
+            EmbeddingItem {
+                index: 1,
+                embedding: vec![2.0, 3.0],
+            },
+            EmbeddingItem {
+                index: 0,
+                embedding: vec![1.0, 4.0],
+            },
+        ];
+        let ordered = validate_embedding_items(items, 2).unwrap();
+        assert_eq!(ordered, vec![vec![1.0, 4.0], vec![2.0, 3.0]]);
+
+        let mismatched = vec![
+            EmbeddingItem {
+                index: 0,
+                embedding: vec![1.0],
+            },
+            EmbeddingItem {
+                index: 1,
+                embedding: vec![2.0, 3.0],
+            },
+        ];
+        assert!(validate_embedding_items(mismatched, 2).is_err());
+    }
+
+    #[test]
+    fn fetch_embeddings_rejects_redirects_without_forwarding_credentials() {
+        for status in [302, 307, 308] {
+            let target = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            target.set_nonblocking(true).unwrap();
+            let destination = format!("http://{}/steal", target.local_addr().unwrap());
+            let origin = crate::ai::test_http::FixtureServer::start(format!(
+                "HTTP/1.1 {status} Redirect\r\nLocation: {destination}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ));
+            let result = tauri::async_runtime::block_on(fetch_embeddings(
+                &origin.base_url,
+                "synthetic-api-key",
+                "text-embedding-3-small",
+                &["synthetic embedding payload"],
+            ));
+            assert!(result.is_err());
+            assert!(
+                matches!(target.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
     }
 }

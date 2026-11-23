@@ -1,25 +1,31 @@
+use std::collections::HashSet;
 use std::process::Command;
 use sysinfo::{ProcessesToUpdate, System};
 use tracing::{info, warn};
 
-pub fn is_process_running(process_name: &str) -> bool {
+pub fn running_process_names() -> HashSet<String> {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
 
-    let target = process_name.to_lowercase();
-    for proc_ in sys.processes().values() {
-        let name = proc_.name().to_string_lossy().to_lowercase();
-        if name == target {
-            return true;
-        }
-    }
-    false
+    sys.processes()
+        .values()
+        .map(|proc_| proc_.name().to_string_lossy().to_lowercase())
+        .collect()
+}
+
+pub fn is_process_running(process_name: &str) -> bool {
+    running_process_names().contains(&process_name.to_lowercase())
 }
 
 pub fn terminate_process(process_name: &str, force: bool) -> Result<(), String> {
     info!("Terminating process: {} (force={})", process_name, force);
 
     let mut cmd = Command::new("taskkill");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
     if force {
         cmd.args(["/F", "/IM", process_name]);
     } else {

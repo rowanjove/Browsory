@@ -1,324 +1,32 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use tracing::info;
 
+#[cfg(test)]
+use super::models::HistoryFilter;
 use super::models::{
     AnalyticsSummary, BackupInfo, BrowserStat, DailyTrendStat, DomainDetail, DomainDynamics,
     DomainStat, DomainTopUrl, DormantDomainItem, EmbeddingIndexingStatus, ForgottenGemItem,
-    HistoryFilter, HistoryPageResult, HourlyStat, HybridSearchResult, IntegrityReport,
-    InterestEvolution, NewDomainItem, OnThisDayItem, OnThisDayResult, PathTreeNode,
-    PeriodComparison, PrivacyRule, ResearchSession, SearchQueryStat, SecurityState,
-    SimilarPageItem, SmartCollection, TagItem, TopicItem, TopicTrend, VisitDetail, VisitListItem,
-    WebMemoryCitation, WebsiteRankingItem, WeeklyHeatmapPoint,
+    HourlyStat, HybridSearchResult, IntegrityReport, InterestEvolution, NewDomainItem,
+    OnThisDayItem, OnThisDayResult, PathTreeNode, PeriodComparison, PrivacyRule, ResearchSession,
+    SearchQueryStat, SecurityState, SimilarPageItem, SmartCollection, TagItem, TopicItem,
+    TopicTrend, VisitDetail, VisitListItem, WebMemoryCitation, WebsiteRankingItem,
+    WeeklyHeatmapPoint,
 };
 use crate::error::{AppError, AppResult};
+
+mod privacy_policy;
+use privacy_policy::escape_like_literal;
+pub use privacy_policy::{build_hidden_rule_conditions, matches_privacy_rule};
+use privacy_policy::{build_rule_conditions, DataScope};
+
+pub mod auto_sync;
+pub use auto_sync::*;
 
 pub mod sources;
 pub use sources::*;
 
-struct AdvancedSearchCriteria {
-    fts_tokens: Vec<String>,
-    like_query: String,
-    site: Option<String>,
-    browser: Option<String>,
-    profile: Option<String>,
-    title: Option<String>,
-    url_fragment: Option<String>,
-    after_ms: Option<i64>,
-    before_ms: Option<i64>,
-}
-
-fn parse_advanced_search(raw: &str) -> AdvancedSearchCriteria {
-    let mut fts_tokens = Vec::new();
-    let mut plain_words = Vec::new();
-    let mut site = None;
-    let mut browser = None;
-    let mut profile = None;
-    let mut title = None;
-    let mut url_fragment = None;
-    let mut after_ms = None;
-    let mut before_ms = None;
-
-    for part in raw.split_whitespace() {
-        if let Some(val) = part.strip_prefix("site:") {
-            if !val.is_empty() {
-                site = Some(val.to_lowercase());
-            }
-        } else if let Some(val) = part.strip_prefix("browser:") {
-            if !val.is_empty() {
-                browser = Some(val.to_lowercase());
-            }
-        } else if let Some(val) = part.strip_prefix("profile:") {
-            if !val.is_empty() {
-                profile = Some(val.to_string());
-            }
-        } else if let Some(val) = part.strip_prefix("title:") {
-            if !val.is_empty() {
-                title = Some(val.to_string());
-            }
-        } else if let Some(val) = part.strip_prefix("url:") {
-            if !val.is_empty() {
-                url_fragment = Some(val.to_string());
-            }
-        } else if let Some(val) = part.strip_prefix("after:") {
-            if let Ok(d) = chrono::NaiveDate::parse_from_str(val, "%Y-%m-%d") {
-                if let Some(dt) = d.and_hms_opt(0, 0, 0) {
-                    after_ms = Some(dt.and_utc().timestamp_millis());
-                }
-            }
-        } else if let Some(val) = part.strip_prefix("before:") {
-            if let Ok(d) = chrono::NaiveDate::parse_from_str(val, "%Y-%m-%d") {
-                if let Some(dt) = d.and_hms_opt(23, 59, 59) {
-                    before_ms = Some(dt.and_utc().timestamp_millis());
-                }
-            }
-        } else {
-            plain_words.push(part);
-            let cleaned: String = part
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
-                .collect();
-            if !cleaned.is_empty() {
-                fts_tokens.push(format!("\"{}\"*", cleaned.replace('"', "\"\"")));
-            }
-        }
-    }
-
-    AdvancedSearchCriteria {
-        fts_tokens,
-        like_query: plain_words.join(" "),
-        site,
-        browser,
-        profile,
-        title,
-        url_fragment,
-        after_ms,
-        before_ms,
-    }
-}
-
-pub fn query_history(conn: &Connection, filter: &HistoryFilter) -> AppResult<HistoryPageResult> {
-    let limit = filter.limit.unwrap_or(100).min(500) as usize;
-    let fetch_limit = limit + 1; // Extra 1 to check has_more
-
-    let mut conditions = Vec::new();
-    let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-    // 1. Advanced Search parser & conditions
-    if let Some(ref raw) = filter.search {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            let criteria = parse_advanced_search(trimmed);
-
-            if let Some(site) = criteria.site {
-                conditions.push("(u.domain LIKE ? OR u.url LIKE ?)".to_string());
-                let pat = format!("%{}%", site);
-                param_values.push(Box::new(pat.clone()));
-                param_values.push(Box::new(pat));
-            }
-
-            if let Some(br) = criteria.browser {
-                conditions.push("s.browser LIKE ?".to_string());
-                param_values.push(Box::new(format!("%{}%", br)));
-            }
-
-            if let Some(prof) = criteria.profile {
-                conditions.push("s.profile LIKE ?".to_string());
-                param_values.push(Box::new(format!("%{}%", prof)));
-            }
-
-            if let Some(t) = criteria.title {
-                conditions.push("u.title LIKE ?".to_string());
-                param_values.push(Box::new(format!("%{}%", t)));
-            }
-
-            if let Some(u_frag) = criteria.url_fragment {
-                conditions.push("u.url LIKE ?".to_string());
-                param_values.push(Box::new(format!("%{}%", u_frag)));
-            }
-
-            if let Some(aft) = criteria.after_ms {
-                conditions.push("v.visit_time >= ?".to_string());
-                param_values.push(Box::new(aft));
-            }
-
-            if let Some(bef) = criteria.before_ms {
-                conditions.push("v.visit_time <= ?".to_string());
-                param_values.push(Box::new(bef));
-            }
-
-            if !criteria.fts_tokens.is_empty() {
-                let fts_query = criteria.fts_tokens.join(" ");
-                let like_pat = format!("%{}%", criteria.like_query);
-                conditions.push("(u.id IN (SELECT rowid FROM urls_fts WHERE urls_fts MATCH ?) OR u.title LIKE ? OR u.url LIKE ?)".to_string());
-                param_values.push(Box::new(fts_query));
-                param_values.push(Box::new(like_pat.clone()));
-                param_values.push(Box::new(like_pat));
-            } else if !criteria.like_query.is_empty() {
-                let like_pat = format!("%{}%", criteria.like_query);
-                conditions.push("(u.title LIKE ? OR u.url LIKE ?)".to_string());
-                param_values.push(Box::new(like_pat.clone()));
-                param_values.push(Box::new(like_pat));
-            }
-        }
-    }
-
-    // 2. Browsers filter
-    if let Some(ref browsers) = filter.browsers {
-        if !browsers.is_empty() {
-            let placeholders = browsers.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            conditions.push(format!("s.browser IN ({})", placeholders));
-            for b in browsers {
-                param_values.push(Box::new(b.clone()));
-            }
-        }
-    }
-
-    // 2b. Profiles filter
-    if let Some(ref profiles) = filter.profiles {
-        if !profiles.is_empty() {
-            let placeholders = profiles.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            conditions.push(format!("s.profile IN ({})", placeholders));
-            for p in profiles {
-                param_values.push(Box::new(p.clone()));
-            }
-        }
-    }
-
-    // 3. Time range filter
-    if let Some(st) = filter.start_time {
-        conditions.push("v.visit_time >= ?".to_string());
-        param_values.push(Box::new(st));
-    }
-    if let Some(et) = filter.end_time {
-        conditions.push("v.visit_time <= ?".to_string());
-        param_values.push(Box::new(et));
-    }
-
-    // 4. Favorites filter
-    if let Some(true) = filter.only_favorites {
-        conditions.push("EXISTS (SELECT 1 FROM favorites f WHERE f.url_id = u.id)".to_string());
-    }
-
-    // 5. Tag filter
-    if let Some(ref tag_name) = filter.tag {
-        conditions.push("EXISTS (SELECT 1 FROM url_tags ut JOIN tags t ON ut.tag_id = t.id WHERE ut.url_id = u.id AND t.name = ?)".to_string());
-        param_values.push(Box::new(tag_name.clone()));
-    }
-
-    // 5b. Exclude Hidden privacy rules from history queries (Fail-closed)
-    let active_rules = get_active_privacy_rules(conn)?;
-    build_hidden_rule_conditions(
-        &active_rules,
-        "u.domain",
-        "u.url",
-        &mut conditions,
-        &mut param_values,
-    );
-
-    let sort_by = filter.sort_by.as_deref().unwrap_or("time_desc");
-
-    // 6. Pagination
-    if filter.offset.is_none() {
-        if let (Some(cur_time), Some(cur_id)) = (filter.cursor_time, filter.cursor_id) {
-            if sort_by == "time_asc" {
-                conditions
-                    .push("(v.visit_time > ? OR (v.visit_time = ? AND v.id > ?))".to_string());
-            } else {
-                conditions
-                    .push("(v.visit_time < ? OR (v.visit_time = ? AND v.id < ?))".to_string());
-            }
-            param_values.push(Box::new(cur_time));
-            param_values.push(Box::new(cur_time));
-            param_values.push(Box::new(cur_id));
-        }
-    }
-
-    let where_clause = if conditions.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", conditions.join(" AND "))
-    };
-
-    let order_clause = match sort_by {
-        "time_asc" => "ORDER BY v.visit_time ASC, v.id ASC",
-        "visit_count" => "ORDER BY (SELECT count(*) FROM visits v_cnt WHERE v_cnt.url_id = u.id) DESC, v.visit_time DESC, v.id DESC",
-        "duration" => "ORDER BY v.visit_duration DESC, v.visit_time DESC, v.id DESC",
-        _ => "ORDER BY v.visit_time DESC, v.id DESC",
-    };
-
-    let (pagination_sql, has_offset) = if filter.offset.is_some() {
-        ("LIMIT ? OFFSET ?", true)
-    } else {
-        ("LIMIT ?", false)
-    };
-
-    let sql = format!(
-        r#"
-        SELECT v.id, v.url_id, v.visit_time, COALESCE(u.title, '') as title, u.url, COALESCE(u.domain, '') as domain,
-               s.browser, s.profile, v.visit_duration, v.transition,
-               EXISTS(SELECT 1 FROM favorites f WHERE f.url_id = u.id) as is_favorite
-        FROM visits v
-        JOIN urls u ON v.url_id = u.id
-        JOIN sources s ON v.source_id = s.id
-        {}
-        {}
-        {}
-        "#,
-        where_clause, order_clause, pagination_sql
-    );
-
-    param_values.push(Box::new(fetch_limit as i64));
-    if has_offset {
-        param_values.push(Box::new(filter.offset.unwrap() as i64));
-    }
-
-    let mut stmt = conn.prepare(&sql)?;
-    let rusqlite_params: Vec<&dyn rusqlite::ToSql> =
-        param_values.iter().map(|b| b.as_ref()).collect();
-
-    let rows = stmt.query_map(rusqlite_params.as_slice(), |row| {
-        Ok(VisitListItem {
-            id: row.get(0)?,
-            url_id: row.get(1)?,
-            visit_time: row.get(2)?,
-            title: row.get(3)?,
-            url: row.get(4)?,
-            domain: row.get(5)?,
-            browser: row.get(6)?,
-            profile: row.get(7)?,
-            visit_duration: row.get(8)?,
-            transition: row.get(9)?,
-            is_favorite: row.get::<_, i64>(10)? == 1,
-        })
-    })?;
-
-    let mut items = Vec::new();
-    for r in rows {
-        items.push(r?);
-    }
-
-    let has_more = items.len() > limit;
-    if has_more {
-        items.truncate(limit);
-    }
-
-    let (next_cursor_time, next_cursor_id) = if let Some(last_item) = items.last() {
-        if has_more {
-            (Some(last_item.visit_time), Some(last_item.id))
-        } else {
-            (None, None)
-        }
-    } else {
-        (None, None)
-    };
-
-    Ok(HistoryPageResult {
-        items,
-        next_cursor_time,
-        next_cursor_id,
-        has_more,
-    })
-}
+pub(crate) mod history_query;
+pub use history_query::query_history;
 
 pub fn get_visit_detail(conn: &Connection, visit_id: i64) -> AppResult<Option<VisitDetail>> {
     // Hidden rules are an output boundary, so load them before querying any
@@ -653,22 +361,54 @@ pub fn remove_tag_from_url(conn: &Connection, url_id: i64, tag_name: &str) -> Ap
 }
 
 pub fn delete_visits(conn: &Connection, visit_ids: &[i64]) -> AppResult<u32> {
+    delete_visits_checked(conn, visit_ids, || Ok(()))
+}
+
+pub fn delete_visits_checked(
+    conn: &Connection,
+    visit_ids: &[i64],
+    check: impl Fn() -> AppResult<()>,
+) -> AppResult<u32> {
+    check()?;
     if visit_ids.is_empty() {
         return Ok(0);
     }
 
+    // One user action is atomic even when split to stay below SQLite's
+    // parameter limit. A later statement error or SQL cancellation must undo
+    // the earlier chunks too.
+    let transaction = conn.unchecked_transaction()?;
     let mut total_deleted = 0;
+    let deleted_at = chrono::Utc::now().timestamp_millis();
     // Chunk by 500 to avoid SQLite SQLITE_MAX_VARIABLE_NUMBER limits
     for chunk in visit_ids.chunks(500) {
+        check()?;
         let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let numbered_placeholders = chunk
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format!("?{}", index + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        let tombstone_sql = format!(
+            "INSERT OR IGNORE INTO visit_exclusions(event_hash,source_id,source_visit_id,deleted_at) \
+             SELECT event_hash,source_id,source_visit_id,?1 FROM visits WHERE id IN ({})",
+            numbered_placeholders
+        );
+        let mut tombstone_params: Vec<&dyn rusqlite::ToSql> = vec![&deleted_at];
+        tombstone_params.extend(chunk.iter().map(|id| id as &dyn rusqlite::ToSql));
+        transaction.execute(&tombstone_sql, tombstone_params.as_slice())?;
+
         let sql = format!("DELETE FROM visits WHERE id IN ({})", placeholders);
 
         let params: Vec<&dyn rusqlite::ToSql> =
             chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        let deleted = conn.execute(&sql, params.as_slice())?;
+        let deleted = transaction.execute(&sql, params.as_slice())?;
         total_deleted += deleted;
     }
 
+    check()?;
+    transaction.commit()?;
     info!("Deleted {} visits from archive.db", total_deleted);
     Ok(total_deleted as u32)
 }
@@ -700,12 +440,51 @@ pub fn toggle_source_enabled(conn: &Connection, source_id: i64, enabled: bool) -
     Ok(())
 }
 
+fn empty_analytics_summary(
+    total_visits: u64,
+    unique_urls: u64,
+    unique_domains: u64,
+    revisit_rate: f64,
+) -> AnalyticsSummary {
+    AnalyticsSummary {
+        total_visits,
+        unique_urls,
+        unique_domains,
+        active_days: 0,
+        revisit_rate,
+        domain_ranking: Vec::new(),
+        browser_breakdown: Vec::new(),
+        hourly_distribution: (0..24).map(|hour| HourlyStat { hour, count: 0 }).collect(),
+        daily_trend: Vec::new(),
+        top_search_queries: Vec::new(),
+        weekly_heatmap: Vec::new(),
+        forgotten_gems: Vec::new(),
+        period_comparison: PeriodComparison {
+            current_count: total_visits,
+            previous_count: 0,
+            growth_rate: 0.0,
+        },
+    }
+}
+
 pub fn get_analytics_summary(
     conn: &Connection,
     start_time: Option<i64>,
     end_time: Option<i64>,
     days: Option<u32>,
 ) -> AppResult<AnalyticsSummary> {
+    get_analytics_summary_with_options(conn, start_time, end_time, days, false)
+}
+
+pub fn get_analytics_summary_with_options(
+    conn: &Connection,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    days: Option<u32>,
+    summary_only: bool,
+) -> AppResult<AnalyticsSummary> {
+    use chrono::{Datelike, Local, TimeZone, Timelike};
+
     let now_ms = chrono::Utc::now().timestamp_millis();
     let (min_visit_time, max_visit_time) = match (start_time, end_time) {
         (Some(st), Some(et)) => (st, et),
@@ -727,7 +506,8 @@ pub fn get_analytics_summary(
         &mut hidden_conds,
         &mut hidden_params,
     );
-    let hidden_clause = if hidden_conds.is_empty() {
+    let has_hidden = !hidden_conds.is_empty();
+    let hidden_clause = if !has_hidden {
         String::new()
     } else {
         format!("AND {}", hidden_conds.join(" AND "))
@@ -740,63 +520,19 @@ pub fn get_analytics_summary(
         time_params.push(b.as_ref());
     }
 
-    // 1. Total visits
-    let total_visits: u64 = conn
-        .query_row(
-            &format!(
-                "SELECT count(*) FROM visits v JOIN urls u ON v.url_id = u.id WHERE v.visit_time >= ? AND v.visit_time <= ? {}",
-                hidden_clause
-            ),
-            time_params.as_slice(),
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
-    // 1b. Unique URLs
-    let unique_urls: u64 = conn
-        .query_row(
-            &format!(
-                "SELECT count(DISTINCT u.id) FROM visits v JOIN urls u ON v.url_id = u.id WHERE v.visit_time >= ? AND v.visit_time <= ? {}",
-                hidden_clause
-            ),
-            time_params.as_slice(),
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
-    // 1c. Unique Domains
-    let unique_domains: u64 = conn
-        .query_row(
-            &format!(
-                r#"
-                SELECT count(DISTINCT u.domain)
-                FROM visits v
-                JOIN urls u ON v.url_id = u.id
-                WHERE v.visit_time >= ? AND v.visit_time <= ? AND u.domain IS NOT NULL AND u.domain != '' {}
-                "#,
-                hidden_clause
-            ),
-            time_params.as_slice(),
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
-
-    // 1d. Active Days
-    let active_days: u64 = conn
-        .query_row(
-            &format!(
-                r#"
-                SELECT count(DISTINCT strftime('%Y-%m-%d', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')))
-                FROM visits v
-                JOIN urls u ON v.url_id = u.id
-                WHERE v.visit_time >= ? AND v.visit_time <= ? {}
-                "#,
-                hidden_clause
-            ),
-            time_params.as_slice(),
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    // Count the same visible time range once. Empty aggregates return zero;
+    // query failures propagate instead of masquerading as empty history.
+    let (total_visits, unique_urls, unique_domains): (u64, u64, u64) = conn.query_row(
+        &format!(
+            r#"SELECT count(*), count(DISTINCT u.id),
+                      count(DISTINCT CASE WHEN u.domain != '' THEN u.domain END)
+               FROM visits v JOIN urls u ON v.url_id = u.id
+               WHERE v.visit_time >= ? AND v.visit_time <= ? {}"#,
+            hidden_clause
+        ),
+        time_params.as_slice(),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
 
     // 1e. Revisit Rate
     let revisit_rate = if total_visits > 0 {
@@ -805,6 +541,15 @@ pub fn get_analytics_summary(
         0.0
     }
     .max(0.0);
+
+    if summary_only {
+        return Ok(empty_analytics_summary(
+            total_visits,
+            unique_urls,
+            unique_domains,
+            revisit_rate,
+        ));
+    }
 
     // 2. Domain ranking (Top 10)
     let domain_sql = format!(
@@ -864,56 +609,63 @@ pub fn get_analytics_summary(
         browser_breakdown.push(r?);
     }
 
-    // 4. Hourly distribution (0..23)
-    let mut hourly_map = std::collections::HashMap::new();
-    let hourly_sql = format!(
-        r#"
-        SELECT CAST(strftime('%H', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) as hr, count(v.id)
-        FROM visits v
-        JOIN urls u ON v.url_id = u.id
-        WHERE v.visit_time >= ? AND v.visit_time <= ? {}
-        GROUP BY hr
-        "#,
-        hidden_clause
-    );
-    let mut hourly_stmt = conn.prepare(&hourly_sql)?;
-    let hourly_rows = hourly_stmt.query_map(time_params.as_slice(), |row| {
-        Ok((row.get::<_, u32>(0)?, row.get::<_, u64>(1)?))
-    })?;
-    for (hr, cnt) in hourly_rows.flatten() {
-        hourly_map.insert(hr, cnt);
+    // Derive all local-calendar distributions in one streamed pass over raw
+    // integer timestamps (covering idx_visits_time_id when no hidden rules apply).
+    let calendar_sql = if has_hidden {
+        format!(
+            "SELECT v.visit_time FROM visits v JOIN urls u ON v.url_id = u.id WHERE v.visit_time >= ? AND v.visit_time <= ? {}",
+            hidden_clause
+        )
+    } else {
+        "SELECT v.visit_time FROM visits v WHERE v.visit_time >= ? AND v.visit_time <= ?"
+            .to_string()
+    };
+    let mut daily_counts = std::collections::BTreeMap::<(i32, u32, u32), u64>::new();
+    let mut hourly_counts = [0u64; 24];
+    let mut weekly_counts = [0u64; 168];
+    {
+        let mut statement = conn.prepare(&calendar_sql)?;
+        let mut rows = statement.query(time_params.as_slice())?;
+        let invalid_bucket = || AppError::Parse("本地时间统计结果无效".into());
+        while let Some(row) = rows.next()? {
+            let visit_ms: i64 = row.get(0)?;
+            let dt = Local
+                .timestamp_opt(visit_ms / 1000, 0)
+                .earliest()
+                .ok_or_else(invalid_bucket)?;
+            let day = dt.weekday().num_days_from_sunday() as usize;
+            let hour = dt.hour() as usize;
+            let date_key = (dt.year(), dt.month(), dt.day());
+            *daily_counts.entry(date_key).or_insert(0) += 1;
+            hourly_counts[hour] += 1;
+            weekly_counts[day * 24 + hour] += 1;
+        }
     }
-    let mut hourly_distribution = Vec::with_capacity(24);
-    for h in 0..24 {
-        hourly_distribution.push(HourlyStat {
-            hour: h,
-            count: *hourly_map.get(&h).unwrap_or(&0),
-        });
-    }
-
-    // 5. Daily trend
-    let daily_sql = format!(
-        r#"
-        SELECT strftime('%Y-%m-%d', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) as dt, count(v.id)
-        FROM visits v
-        JOIN urls u ON v.url_id = u.id
-        WHERE v.visit_time >= ? AND v.visit_time <= ? {}
-        GROUP BY dt
-        ORDER BY dt ASC
-        "#,
-        hidden_clause
-    );
-    let mut daily_stmt = conn.prepare(&daily_sql)?;
-    let daily_rows = daily_stmt.query_map(time_params.as_slice(), |row| {
-        Ok(DailyTrendStat {
-            date: row.get(0)?,
-            count: row.get(1)?,
+    let active_days = daily_counts.len() as u64;
+    let daily_trend = daily_counts
+        .into_iter()
+        .map(|((y, m, d), count)| DailyTrendStat {
+            date: format!("{y:04}-{m:02}-{d:02}"),
+            count,
         })
-    })?;
-    let mut daily_trend = Vec::new();
-    for r in daily_rows {
-        daily_trend.push(r?);
-    }
+        .collect();
+    let hourly_distribution = hourly_counts
+        .into_iter()
+        .enumerate()
+        .map(|(hour, count)| HourlyStat {
+            hour: hour as u32,
+            count,
+        })
+        .collect();
+    let weekly_heatmap = weekly_counts
+        .into_iter()
+        .enumerate()
+        .map(|(index, count)| WeeklyHeatmapPoint {
+            day_of_week: (index / 24) as u32,
+            hour: (index % 24) as u32,
+            count,
+        })
+        .collect();
 
     // 6. Search queries (Top 20)
     let query_sql = format!(
@@ -965,64 +717,48 @@ pub fn get_analytics_summary(
     });
     top_search_queries.truncate(20);
 
-    // 7. 7x24 Weekly-Hourly Heatmap (168 points)
-    let mut weekly_map = std::collections::HashMap::new();
-    let weekly_sql = format!(
-        r#"
-        SELECT 
-            CAST(strftime('%w', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) as dow,
-            CAST(strftime('%H', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) as hr,
-            count(v.id) as cnt
-        FROM visits v
-        JOIN urls u ON v.url_id = u.id
-        WHERE v.visit_time >= ? AND v.visit_time <= ? {}
-        GROUP BY dow, hr
-        "#,
-        hidden_clause
-    );
-    let mut weekly_stmt = conn.prepare(&weekly_sql)?;
-    let weekly_rows = weekly_stmt.query_map(time_params.as_slice(), |row| {
-        Ok((
-            row.get::<_, u32>(0)?,
-            row.get::<_, u32>(1)?,
-            row.get::<_, u64>(2)?,
-        ))
-    })?;
-    for (dow, hr, cnt) in weekly_rows.flatten() {
-        weekly_map.insert((dow, hr), cnt);
-    }
-    let mut weekly_heatmap = Vec::with_capacity(168);
-    for dow in 0..7 {
-        for hr in 0..24 {
-            weekly_heatmap.push(WeeklyHeatmapPoint {
-                day_of_week: dow,
-                hour: hr,
-                count: *weekly_map.get(&(dow, hr)).unwrap_or(&0),
-            });
-        }
-    }
-
     // 8. Forgotten Gems (高频访问 >= 3 次，但 30 天未再次打开)
+    // Aggregate visits via covering idx_visits_url_time first so we avoid
+    // joining urls before narrowing down to qualifying url_ids.
     let thirty_days_ago = now_ms - 30 * 86_400_000;
-    let gems_sql = format!(
+    let gems_sql = if has_hidden {
+        format!(
+            r#"
+            SELECT u.id, COALESCE(u.title, ''), u.url, COALESCE(u.domain, ''), vc.cnt, vc.last_time
+            FROM (
+                SELECT url_id, count(*) AS cnt, max(visit_time) AS last_time
+                FROM visits
+                GROUP BY url_id
+                HAVING cnt >= 3 AND last_time < ?1
+            ) vc
+            JOIN urls u ON u.id = vc.url_id
+            WHERE 1=1 {hidden_clause}
+            ORDER BY vc.cnt DESC, vc.last_time DESC
+            LIMIT 15
+            "#
+        )
+    } else {
         r#"
-        SELECT u.id, u.title, u.url, u.domain, count(v.id) as cnt, max(v.visit_time) as last_time
-        FROM urls u
-        JOIN visits v ON v.url_id = u.id
-        WHERE 1=1 {}
-        GROUP BY u.id
-        HAVING cnt >= 3 AND last_time < ?
-        ORDER BY cnt DESC, last_time DESC
-        LIMIT 15
-        "#,
-        hidden_clause
-    );
+        SELECT u.id, COALESCE(u.title, ''), u.url, COALESCE(u.domain, ''), vc.cnt, vc.last_time
+        FROM (
+            SELECT url_id, count(*) AS cnt, max(visit_time) AS last_time
+            FROM visits
+            GROUP BY url_id
+            HAVING cnt >= 3 AND last_time < ?1
+            ORDER BY cnt DESC, last_time DESC
+            LIMIT 15
+        ) vc
+        JOIN urls u ON u.id = vc.url_id
+        ORDER BY vc.cnt DESC, vc.last_time DESC
+        "#
+        .to_string()
+    };
     let mut gems_stmt = conn.prepare(&gems_sql)?;
     let mut gems_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + hidden_params.len());
+    gems_params.push(&thirty_days_ago);
     for b in &hidden_params {
         gems_params.push(b.as_ref());
     }
-    gems_params.push(&thirty_days_ago);
     let gems_rows = gems_stmt.query_map(gems_params.as_slice(), |row| {
         Ok(ForgottenGemItem {
             url_id: row.get(0)?,
@@ -1050,15 +786,16 @@ pub fn get_analytics_summary(
         for b in &hidden_params {
             prev_time_params.push(b.as_ref());
         }
-        let prev_cnt: u64 = conn
-            .query_row(
-                &format!(
-                    "SELECT count(*) FROM visits v JOIN urls u ON v.url_id = u.id WHERE v.visit_time >= ? AND v.visit_time < ? {}",
-                    hidden_clause
-                ),
-                prev_time_params.as_slice(),
-                |r| r.get(0),
+        let prev_sql = if has_hidden {
+            format!(
+                "SELECT count(*) FROM visits v JOIN urls u ON v.url_id = u.id WHERE v.visit_time >= ? AND v.visit_time < ? {}",
+                hidden_clause
             )
+        } else {
+            "SELECT count(*) FROM visits v WHERE v.visit_time >= ? AND v.visit_time < ?".to_string()
+        };
+        let prev_cnt: u64 = conn
+            .query_row(&prev_sql, prev_time_params.as_slice(), |r| r.get(0))
             .unwrap_or(0);
 
         let rate = if prev_cnt > 0 {
@@ -1223,155 +960,186 @@ fn get_research_sessions_filtered(
         _ => 0,
     };
 
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT v.id, v.source_id, v.visit_time, u.title, u.url, u.domain, s.browser, s.profile
-        FROM visits v
-        JOIN urls u ON v.url_id = u.id
-        JOIN sources s ON v.source_id = s.id
-        WHERE v.visit_time >= ?1
-        ORDER BY v.source_id ASC, v.visit_time ASC
-        LIMIT 10000
-        "#,
-    )?;
-
-    struct VisitRaw {
-        source_id: i64,
-        visit_time: i64,
-        title: String,
-        url: String,
-        domain: String,
-        browser: String,
-        profile: String,
-    }
-
-    let rows = stmt.query_map(params![min_visit_time], |row| {
-        Ok(VisitRaw {
-            source_id: row.get(1)?,
-            visit_time: row.get(2)?,
-            title: row.get(3)?,
-            url: row.get(4)?,
-            domain: row.get(5)?,
-            browser: row.get(6)?,
-            profile: row.get(7)?,
-        })
-    })?;
-
     let active_rules = get_active_privacy_rules(conn)?;
-    let mut all_visits = Vec::new();
-    for r in rows {
-        let v = r?;
-        let excluded = active_rules.iter().any(|rule| {
-            let hidden = rule.rule_type == "hidden";
-            // Unknown legacy rule types are treated as AI-blocking so a
-            // malformed row can never widen cloud-data exposure.
-            let private_for_ai = exclude_private && rule.rule_type != "hidden";
-            (hidden || private_for_ai) && matches_privacy_rule(&rule.pattern, &v.domain, &v.url)
-        });
-        if excluded {
-            continue;
-        }
-        all_visits.push(v);
-    }
-
     struct ActiveSession {
         source_id: i64,
         start_time: i64,
         end_time: i64,
         visit_count: u32,
         domain_counts: std::collections::HashMap<String, u32>,
-        first_title: String,
+        earliest_title: String,
         browser: String,
         profile: String,
     }
 
-    let mut sessions: Vec<ResearchSession> = Vec::new();
-    let mut cur_session: Option<ActiveSession> = None;
+    let mut sessions = std::collections::BTreeMap::new();
+    let flush_session =
+        |s: ActiveSession, out: &mut std::collections::BTreeMap<(i64, i64), ResearchSession>| {
+            let mut dom_vec: Vec<_> = s.domain_counts.into_iter().collect();
+            dom_vec.sort_by_key(|a| std::cmp::Reverse(a.1));
+            let dominant_domain = dom_vec.first().map(|(d, _)| d.clone()).unwrap_or_default();
+            let duration_secs = ((s.end_time - s.start_time) / 1000).max(0);
+            let sample_title = if s.earliest_title.trim().is_empty() {
+                dominant_domain.clone()
+            } else {
+                s.earliest_title
+            };
+            let session_id = format!("ses_{}_{}", s.source_id, s.start_time);
 
-    let flush_session = |s: ActiveSession, out: &mut Vec<ResearchSession>| {
-        let mut dom_vec: Vec<_> = s.domain_counts.into_iter().collect();
-        dom_vec.sort_by_key(|a| std::cmp::Reverse(a.1));
-        let dominant_domain = dom_vec.first().map(|(d, _)| d.clone()).unwrap_or_default();
-        let duration_secs = ((s.end_time - s.start_time) / 1000).max(0);
-        let sample_title = if s.first_title.trim().is_empty() {
-            dominant_domain.clone()
-        } else {
-            s.first_title
+            out.insert(
+                (s.start_time, s.source_id),
+                ResearchSession {
+                    session_id,
+                    start_time: s.start_time,
+                    end_time: s.end_time,
+                    duration_secs,
+                    visit_count: s.visit_count,
+                    dominant_domain,
+                    sample_title,
+                    browser: s.browser,
+                    profile: s.profile,
+                },
+            );
+            if limit > 0 && out.len() > limit as usize {
+                out.pop_first();
+            }
         };
-        let session_id = format!("ses_{}_{}", s.source_id, s.start_time);
 
-        out.push(ResearchSession {
-            session_id,
-            start_time: s.start_time,
-            end_time: s.end_time,
-            duration_secs,
-            visit_count: s.visit_count,
-            dominant_domain,
-            sample_title,
-            browser: s.browser,
-            profile: s.profile,
-        });
-    };
+    // Order sources by latest activity so `sessions` fills with the newest entries
+    // first and older sources can be pruned in one index seek.
+    let mut source_stmt = conn.prepare(
+        r#"
+        SELECT s.id, s.browser, s.profile,
+               (SELECT MAX(v.visit_time) FROM visits v WHERE v.source_id = s.id) AS max_t
+        FROM sources s
+        ORDER BY COALESCE(max_t, -9223372036854775808) DESC, s.id DESC
+        "#,
+    )?;
+    let source_rows = source_stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     const SESSION_BREAK_MS: i64 = 30 * 60 * 1000; // 30 minutes
+    let mut visit_stmt = conn.prepare_cached(
+        r#"
+        SELECT v.visit_time, COALESCE(u.title, ''), u.url, COALESCE(u.domain, '')
+        FROM visits v
+        JOIN urls u ON v.url_id = u.id
+        WHERE v.source_id = ?1 AND v.visit_time >= ?2
+        ORDER BY v.visit_time DESC
+        "#,
+    )?;
 
-    for v in all_visits {
-        match cur_session.take() {
-            None => {
-                let mut dmap = std::collections::HashMap::new();
-                if !v.domain.is_empty() {
-                    dmap.insert(v.domain.clone(), 1);
-                }
-                cur_session = Some(ActiveSession {
-                    source_id: v.source_id,
-                    start_time: v.visit_time,
-                    end_time: v.visit_time,
-                    visit_count: 1,
-                    domain_counts: dmap,
-                    first_title: v.title,
-                    browser: v.browser,
-                    profile: v.profile,
-                });
-            }
-            Some(mut s) => {
-                if v.source_id == s.source_id && (v.visit_time - s.end_time) <= SESSION_BREAK_MS {
-                    if !v.domain.is_empty() {
-                        *s.domain_counts.entry(v.domain.clone()).or_insert(0) += 1;
-                    }
-                    s.end_time = v.visit_time;
-                    s.visit_count += 1;
-                    cur_session = Some(s);
-                } else {
-                    flush_session(s, &mut sessions);
-                    let mut new_dmap = std::collections::HashMap::new();
-                    if !v.domain.is_empty() {
-                        new_dmap.insert(v.domain.clone(), 1);
-                    }
-                    cur_session = Some(ActiveSession {
-                        source_id: v.source_id,
-                        start_time: v.visit_time,
-                        end_time: v.visit_time,
-                        visit_count: 1,
-                        domain_counts: new_dmap,
-                        first_title: v.title,
-                        browser: v.browser,
-                        profile: v.profile,
-                    });
+    for (source_id, browser, profile, max_visit_opt) in source_rows {
+        let Some(max_t) = max_visit_opt else {
+            continue;
+        };
+        if max_t < min_visit_time {
+            continue;
+        }
+        if limit > 0 && sessions.len() >= limit as usize {
+            if let Some(&(earliest_start, earliest_src)) = sessions.keys().next() {
+                if max_t < earliest_start || (max_t == earliest_start && source_id < earliest_src) {
+                    break;
                 }
             }
         }
+
+        let mut cur_session: Option<ActiveSession> = None;
+        let mut rows = visit_stmt.query(params![source_id, min_visit_time])?;
+        while let Some(row) = rows.next()? {
+            let visit_time: i64 = row.get(0)?;
+            let title: String = row.get(1)?;
+            let url: String = row.get(2)?;
+            let domain: String = row.get(3)?;
+            let excluded = active_rules.iter().any(|rule| {
+                let hidden = rule.rule_type == "hidden";
+                // Unknown legacy rule types are treated as AI-blocking so a
+                // malformed row can never widen cloud-data exposure.
+                let private_for_ai = exclude_private && rule.rule_type != "hidden";
+                (hidden || private_for_ai) && matches_privacy_rule(&rule.pattern, &domain, &url)
+            });
+            if excluded {
+                continue;
+            }
+
+            match cur_session.take() {
+                None => {
+                    if limit > 0 && sessions.len() >= limit as usize {
+                        if let Some(&(earliest_start, earliest_src)) = sessions.keys().next() {
+                            if visit_time < earliest_start
+                                || (visit_time == earliest_start && source_id < earliest_src)
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    let mut dmap = std::collections::HashMap::new();
+                    if !domain.is_empty() {
+                        dmap.insert(domain, 1);
+                    }
+                    cur_session = Some(ActiveSession {
+                        source_id,
+                        start_time: visit_time,
+                        end_time: visit_time,
+                        visit_count: 1,
+                        domain_counts: dmap,
+                        earliest_title: title,
+                        browser: browser.clone(),
+                        profile: profile.clone(),
+                    });
+                }
+                Some(mut s) => {
+                    if (s.start_time - visit_time) <= SESSION_BREAK_MS {
+                        if !domain.is_empty() {
+                            *s.domain_counts.entry(domain).or_insert(0) += 1;
+                        }
+                        s.start_time = visit_time;
+                        s.earliest_title = title;
+                        s.visit_count += 1;
+                        cur_session = Some(s);
+                    } else {
+                        flush_session(s, &mut sessions);
+                        if limit > 0 && sessions.len() >= limit as usize {
+                            if let Some(&(earliest_start, earliest_src)) = sessions.keys().next() {
+                                if visit_time < earliest_start
+                                    || (visit_time == earliest_start && source_id < earliest_src)
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        let mut new_dmap = std::collections::HashMap::new();
+                        if !domain.is_empty() {
+                            new_dmap.insert(domain, 1);
+                        }
+                        cur_session = Some(ActiveSession {
+                            source_id,
+                            start_time: visit_time,
+                            end_time: visit_time,
+                            visit_count: 1,
+                            domain_counts: new_dmap,
+                            earliest_title: title,
+                            browser: browser.clone(),
+                            profile: profile.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(last_s) = cur_session {
+            flush_session(last_s, &mut sessions);
+        }
     }
 
-    if let Some(last_s) = cur_session {
-        flush_session(last_s, &mut sessions);
-    }
-
-    sessions.sort_by_key(|a| std::cmp::Reverse(a.start_time));
-    if limit > 0 && sessions.len() > limit as usize {
-        sessions.truncate(limit as usize);
-    }
-
-    Ok(sessions)
+    Ok(sessions.into_values().rev().collect())
 }
 
 // ==========================================
@@ -1380,6 +1148,7 @@ fn get_research_sessions_filtered(
 
 pub fn get_security_state(conn: &Connection) -> AppResult<SecurityState> {
     let now = chrono::Utc::now().timestamp_millis();
+    let has_envelope = get_master_key_envelope(conn)?.is_some();
     let row = conn.query_row(
         r#"
         SELECT pin_enabled, auto_lock_minutes, lock_on_minimize, lock_on_sleep,
@@ -1402,11 +1171,14 @@ pub fn get_security_state(conn: &Connection) -> AppResult<SecurityState> {
                 0
             };
 
+            let enabled = pin_enabled == 1;
             Ok(SecurityState {
-                pin_enabled: pin_enabled == 1,
+                pin_enabled: enabled,
                 auto_lock_minutes,
                 lock_on_minimize: lock_on_minimize == 1,
                 lock_on_sleep: lock_on_sleep == 1,
+                native_sleep_lock_supported: crate::security::power::supported(),
+                pin_migration_needed: enabled && !has_envelope,
                 is_locked_out,
                 lockout_remaining_secs,
             })
@@ -1605,52 +1377,6 @@ pub fn get_active_privacy_rules(conn: &Connection) -> AppResult<Vec<PrivacyRule>
         rules.push(r?);
     }
     Ok(rules)
-}
-
-pub fn matches_privacy_rule(pattern: &str, domain: &str, url: &str) -> bool {
-    let d_lower = domain.to_lowercase();
-    let u_lower = url.to_lowercase();
-    let p_lower = pattern.to_lowercase();
-    if let Some(suffix) = p_lower.strip_prefix("*.") {
-        d_lower == suffix || d_lower.ends_with(&format!(".{}", suffix))
-    } else {
-        d_lower.contains(&p_lower) || u_lower.contains(&p_lower)
-    }
-}
-
-fn escape_like_literal(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
-}
-
-pub fn build_hidden_rule_conditions(
-    rules: &[PrivacyRule],
-    domain_col: &str,
-    url_col: &str,
-    conditions: &mut Vec<String>,
-    param_values: &mut Vec<Box<dyn rusqlite::ToSql>>,
-) {
-    for r in rules.iter().filter(|r| r.rule_type == "hidden") {
-        let pat = r.pattern.to_lowercase();
-        if let Some(suffix) = pat.strip_prefix("*.") {
-            conditions.push(format!(
-                r#"NOT (COALESCE({}, '') LIKE ? ESCAPE '\' OR COALESCE({}, '') = ?)"#,
-                domain_col, domain_col
-            ));
-            param_values.push(Box::new(format!("%.{}", escape_like_literal(suffix))));
-            param_values.push(Box::new(suffix.to_string()));
-        } else {
-            conditions.push(format!(
-                r#"NOT (COALESCE({}, '') LIKE ? ESCAPE '\' OR COALESCE({}, '') LIKE ? ESCAPE '\')"#,
-                domain_col, url_col
-            ));
-            let escaped = escape_like_literal(&pat);
-            param_values.push(Box::new(format!("%{}%", escaped)));
-            param_values.push(Box::new(format!("%{}%", escaped)));
-        }
-    }
 }
 
 pub fn add_privacy_rule(
@@ -1868,127 +1594,92 @@ pub fn query_history_for_ai(
     query: &str,
     limit: u32,
 ) -> AppResult<Vec<WebMemoryCitation>> {
-    let active_rules = get_active_privacy_rules(conn)?;
-    let is_blocked = |domain: &str, url: &str| -> bool {
-        active_rules
-            .iter()
-            .any(|rule| matches_privacy_rule(&rule.pattern, domain, url))
-    };
-
-    let trimmed = query.trim();
-    let rows = if trimmed.is_empty() {
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT v.id, u.title, u.url, u.domain, v.visit_time
-            FROM visits v
-            JOIN urls u ON v.url_id = u.id
-            ORDER BY v.visit_time DESC
-            LIMIT 100
-            "#,
-        )?;
-        let iter = stmt.query_map([], |row| {
-            Ok(WebMemoryCitation {
-                visit_id: row.get(0)?,
-                title: row.get(1)?,
-                url: row.get(2)?,
-                domain: row.get(3)?,
-                visit_time: row.get(4)?,
-            })
-        })?;
-        let mut list = Vec::new();
-        for r in iter {
-            list.push(r?);
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let rules = get_active_privacy_rules(conn)?;
+    let mut conditions = Vec::new();
+    let mut values = Vec::new();
+    build_rule_conditions(
+        &rules,
+        DataScope::Ai,
+        "u.domain",
+        "u.url",
+        &mut conditions,
+        &mut values,
+    );
+    let privacy_clause = conditions.join(" AND ");
+    let mut output = Vec::new();
+    let mut seen_urls = std::collections::HashSet::new();
+    // Stream ordered rows until enough distinct eligible URLs have been found.
+    // A fixed visit LIMIT before deduplication starves older public evidence.
+    let mut collect = |fts: bool, search: Option<String>| -> AppResult<()> {
+        if output.len() >= limit as usize {
+            return Ok(());
         }
-        list
-    } else {
-        let mut list = Vec::new();
-        let cleaned: String = trimmed
-            .chars()
-            .filter(|c| {
-                c.is_alphanumeric() || c.is_whitespace() || *c == '_' || *c == '-' || *c == '.'
-            })
-            .collect();
-        let fts_tokens: Vec<String> = cleaned
-            .split_whitespace()
-            .filter(|w| !w.is_empty())
-            .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
-            .collect();
-
-        if !fts_tokens.is_empty() {
-            let fts_query = fts_tokens.join(" ");
-            if let Ok(mut fts_stmt) = conn.prepare(
-                r#"
-                SELECT v.id, u.title, u.url, u.domain, v.visit_time
-                FROM urls_fts fts
-                JOIN urls u ON fts.rowid = u.id
-                JOIN visits v ON v.url_id = u.id
-                WHERE urls_fts MATCH ?1
-                ORDER BY v.visit_time DESC
-                LIMIT 80
-                "#,
-            ) {
-                if let Ok(iter) = fts_stmt.query_map(params![fts_query], |row| {
-                    Ok(WebMemoryCitation {
-                        visit_id: row.get(0)?,
-                        title: row.get(1)?,
-                        url: row.get(2)?,
-                        domain: row.get(3)?,
-                        visit_time: row.get(4)?,
-                    })
-                }) {
-                    for r in iter.flatten() {
-                        list.push(r);
-                    }
-                }
+        let mut params_ref: Vec<&dyn rusqlite::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let search_clause = match (fts, search.as_ref()) {
+            (true, Some(value)) => {
+                params_ref.push(value);
+                "AND urls_fts MATCH ?"
             }
-        }
-
-        if list.len() < limit as usize {
-            let like_pattern = format!("%{}%", trimmed);
-            let mut like_stmt = conn.prepare(
-                r#"
-                SELECT v.id, u.title, u.url, u.domain, v.visit_time
-                FROM visits v
-                JOIN urls u ON v.url_id = u.id
-                WHERE u.title LIKE ?1 OR u.url LIKE ?1 OR u.domain LIKE ?1
-                ORDER BY v.visit_time DESC
-                LIMIT 60
-                "#,
-            )?;
-            let iter = like_stmt.query_map(params![like_pattern], |row| {
-                Ok(WebMemoryCitation {
+            (false, Some(value)) => {
+                params_ref.extend([value as &dyn rusqlite::ToSql, value, value]);
+                "AND (u.title LIKE ? ESCAPE '\\' OR u.url LIKE ? ESCAPE '\\' OR u.domain LIKE ? ESCAPE '\\')"
+            }
+            (_, None) => "",
+        };
+        let fts_join = if fts {
+            "JOIN urls_fts ON urls_fts.rowid = u.id"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT v.id, COALESCE(u.title,''), u.url, COALESCE(u.domain,''), v.visit_time
+             FROM visits v JOIN urls u ON v.url_id = u.id {fts_join}
+             WHERE {privacy_clause} {search_clause}
+             ORDER BY v.visit_time DESC, v.id DESC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(params_ref.as_slice())?;
+        while let Some(row) = rows.next()? {
+            let url: String = row.get(2)?;
+            if seen_urls.insert(url.clone()) {
+                output.push(WebMemoryCitation {
                     visit_id: row.get(0)?,
                     title: row.get(1)?,
-                    url: row.get(2)?,
+                    url,
                     domain: row.get(3)?,
                     visit_time: row.get(4)?,
-                })
-            })?;
-            for r in iter.flatten() {
-                if !list.iter().any(|item| item.visit_id == r.visit_id) {
-                    list.push(r);
+                });
+                if output.len() >= limit as usize {
+                    break;
                 }
             }
         }
-        list
+        Ok(())
     };
-
-    let mut safe_citations = Vec::new();
-    let mut seen_urls = std::collections::HashSet::new();
-
-    for item in rows {
-        if is_blocked(&item.domain, &item.url) {
-            continue;
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        collect(false, None)?;
+    } else {
+        let cleaned: String = trimmed
+            .chars()
+            .filter(|c| c.is_alphanumeric() || c.is_whitespace() || matches!(c, '_' | '-' | '.'))
+            .collect();
+        let tokens: Vec<_> = cleaned
+            .split_whitespace()
+            .map(|word| format!("\"{word}\"*"))
+            .collect();
+        if !tokens.is_empty() {
+            collect(true, Some(tokens.join(" ")))?;
         }
-        if seen_urls.insert(item.url.clone()) {
-            safe_citations.push(item);
-        }
-        if safe_citations.len() >= limit as usize {
-            break;
-        }
+        // LIKE also supports languages/punctuation not tokenized as expected by FTS.
+        // Reuse the same privacy and distinct-URL collection before bounding output.
+        collect(false, Some(format!("%{}%", escape_like_literal(trimmed))))?;
     }
-
-    Ok(safe_citations)
+    output.truncate(limit as usize);
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -2047,6 +1738,8 @@ pub fn get_website_ranking(
     end_time: Option<i64>,
     limit: Option<u32>,
 ) -> AppResult<Vec<WebsiteRankingItem>> {
+    use chrono::{Datelike, Local, TimeZone};
+
     let now_ms = chrono::Utc::now().timestamp_millis();
     let min_time = start_time.unwrap_or(0);
     let max_time = end_time.unwrap_or(now_ms);
@@ -2068,61 +1761,166 @@ pub fn get_website_ranking(
         format!("AND {}", hidden_conds.join(" AND "))
     };
 
-    let sql = format!(
-        r#"
-        SELECT 
-            u.domain,
-            count(v.id) as visits,
-            count(DISTINCT u.id) as unique_urls,
-            count(DISTINCT strftime('%Y-%m-%d', datetime(v.visit_time / 1000, 'unixepoch', 'localtime'))) as active_days,
-            min(v.visit_time) as first_visit,
-            max(v.visit_time) as last_visit
-        FROM visits v
-        JOIN urls u ON v.url_id = u.id
-        WHERE v.visit_time >= ? AND v.visit_time <= ? AND u.domain IS NOT NULL AND u.domain != '' {}
-        GROUP BY u.domain
-        ORDER BY visits DESC
-        LIMIT ?
-        "#,
-        hidden_clause
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let mut query_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(3 + hidden_params.len());
-    query_params.push(&min_time);
-    query_params.push(&max_time);
+    // Stage 1: rank top domains without computing strftime across all rows.
+    // For full-history queries, pre-aggregate via covering idx_visits_url_time.
+    struct RawDomainRank {
+        domain: String,
+        visits: u64,
+        unique_urls: u64,
+        first_visit_time: i64,
+        last_visit_time: i64,
+    }
+    let mut ranked: Vec<RawDomainRank> = if start_time.is_none() && end_time.is_none() {
+        let sql = format!(
+            r#"
+            SELECT u.domain, SUM(vc.cnt) as visits, COUNT(u.id) as unique_urls,
+                   MIN(vc.min_t) as first_visit, MAX(vc.max_t) as last_visit
+            FROM (
+                SELECT url_id, COUNT(*) AS cnt, MIN(visit_time) AS min_t, MAX(visit_time) AS max_t
+                FROM visits
+                GROUP BY url_id
+            ) vc
+            JOIN urls u ON u.id = vc.url_id
+            WHERE u.domain IS NOT NULL AND u.domain != '' {}
+            GROUP BY u.domain
+            ORDER BY visits DESC
+            LIMIT ?
+            "#,
+            hidden_clause
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut qparams: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + hidden_params.len());
+        for p in &hidden_params {
+            qparams.push(p.as_ref());
+        }
+        qparams.push(&top_limit);
+        let rows = stmt.query_map(qparams.as_slice(), |row| {
+            Ok(RawDomainRank {
+                domain: row.get(0)?,
+                visits: row.get(1)?,
+                unique_urls: row.get(2)?,
+                first_visit_time: row.get(3)?,
+                last_visit_time: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        let sql = format!(
+            r#"
+            SELECT u.domain, count(v.id) as visits, count(DISTINCT u.id) as unique_urls,
+                   min(v.visit_time) as first_visit, max(v.visit_time) as last_visit
+            FROM visits v
+            JOIN urls u ON v.url_id = u.id
+            WHERE v.visit_time >= ? AND v.visit_time <= ? AND u.domain IS NOT NULL AND u.domain != '' {}
+            GROUP BY u.domain
+            ORDER BY visits DESC
+            LIMIT ?
+            "#,
+            hidden_clause
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut qparams: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(3 + hidden_params.len());
+        qparams.push(&min_time);
+        qparams.push(&max_time);
+        for p in &hidden_params {
+            qparams.push(p.as_ref());
+        }
+        qparams.push(&top_limit);
+        let rows = stmt.query_map(qparams.as_slice(), |row| {
+            Ok(RawDomainRank {
+                domain: row.get(0)?,
+                visits: row.get(1)?,
+                unique_urls: row.get(2)?,
+                first_visit_time: row.get(3)?,
+                last_visit_time: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    if ranked.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Stage 2: compute active_days only for the selected top domains.
+    let placeholders = vec!["?"; ranked.len()].join(",");
+    let unbounded_range = start_time.is_none() && end_time.is_none();
+    let days_sql = if unbounded_range {
+        format!(
+            r#"
+            SELECT u.domain, v.visit_time
+            FROM urls u
+            JOIN visits v ON v.url_id = u.id
+            WHERE u.domain IN ({}) {}
+            "#,
+            placeholders, hidden_clause
+        )
+    } else {
+        format!(
+            r#"
+            SELECT u.domain, v.visit_time
+            FROM urls u
+            JOIN visits v ON v.url_id = u.id
+            WHERE u.domain IN ({}) AND v.visit_time >= ? AND v.visit_time <= ? {}
+            "#,
+            placeholders, hidden_clause
+        )
+    };
+    let mut days_params: Vec<&dyn rusqlite::ToSql> =
+        Vec::with_capacity(ranked.len() + 2 + hidden_params.len());
+    for item in &ranked {
+        days_params.push(&item.domain);
+    }
+    if !unbounded_range {
+        days_params.push(&min_time);
+        days_params.push(&max_time);
+    }
     for p in &hidden_params {
-        query_params.push(p.as_ref());
+        days_params.push(p.as_ref());
     }
-    query_params.push(&top_limit);
-
-    let rows = stmt.query_map(query_params.as_slice(), |row| {
+    let mut active_days_map: std::collections::HashMap<
+        String,
+        std::collections::HashSet<(i32, u32, u32)>,
+    > = std::collections::HashMap::with_capacity(ranked.len());
+    let mut days_stmt = conn.prepare(&days_sql)?;
+    let mut days_rows = days_stmt.query(days_params.as_slice())?;
+    while let Some(row) = days_rows.next()? {
         let domain: String = row.get(0)?;
-        let visits: u64 = row.get(1)?;
-        let unique_urls: u64 = row.get(2)?;
-        let active_days: u64 = row.get(3)?;
-        let first_visit_time: i64 = row.get(4)?;
-        let last_visit_time: i64 = row.get(5)?;
-        let revisit_rate = if visits > 0 {
-            ((visits as f64 - unique_urls as f64) / visits as f64 * 1000.0).round() / 10.0
-        } else {
-            0.0
-        };
-
-        Ok(WebsiteRankingItem {
-            domain,
-            visits,
-            unique_urls,
-            active_days,
-            revisit_rate: revisit_rate.max(0.0),
-            first_visit_time,
-            last_visit_time,
-        })
-    })?;
-
-    let mut list = Vec::new();
-    for r in rows {
-        list.push(r?);
+        let visit_ms: i64 = row.get(1)?;
+        if let Some(dt) = Local.timestamp_opt(visit_ms / 1000, 0).earliest() {
+            active_days_map
+                .entry(domain)
+                .or_default()
+                .insert((dt.year(), dt.month(), dt.day()));
+        }
     }
+
+    let list = ranked
+        .drain(..)
+        .map(|item| {
+            let active_days = active_days_map
+                .get(&item.domain)
+                .map(|set| set.len() as u64)
+                .unwrap_or(0);
+            let revisit_rate = if item.visits > 0 {
+                ((item.visits as f64 - item.unique_urls as f64) / item.visits as f64 * 1000.0)
+                    .round()
+                    / 10.0
+            } else {
+                0.0
+            };
+            WebsiteRankingItem {
+                domain: item.domain,
+                visits: item.visits,
+                unique_urls: item.unique_urls,
+                active_days,
+                revisit_rate: revisit_rate.max(0.0),
+                first_visit_time: item.first_visit_time,
+                last_visit_time: item.last_visit_time,
+            }
+        })
+        .collect();
+
     Ok(list)
 }
 
@@ -2390,94 +2188,129 @@ pub fn get_domain_dynamics(
     let min_time = start_time.unwrap_or_else(|| now_ms - 30 * 86_400_000);
     let max_time = end_time.unwrap_or(now_ms);
 
-    // New Domains: domain whose min(v.visit_time) overall is within [min_time, max_time]
-    let new_sql = format!(
+    // Aggregate visits per url_id using covering idx_visits_url_time once,
+    // then fold into domain-level metrics for both new & dormant domains.
+    let sql = format!(
         r#"
-        SELECT u.domain, min(v.visit_time) as first_visit, COALESCE(u.title, ''), u.url, count(v.id) as cnt
-        FROM visits v
-        JOIN urls u ON v.url_id = u.id
+        SELECT u.domain, COALESCE(u.title, ''), u.url, vc.cnt, vc.min_t, vc.max_t
+        FROM (
+            SELECT url_id, count(*) AS cnt, min(visit_time) AS min_t, max(visit_time) AS max_t
+            FROM visits
+            GROUP BY url_id
+        ) vc
+        JOIN urls u ON u.id = vc.url_id
         WHERE u.domain IS NOT NULL AND u.domain != '' {}
-        GROUP BY u.domain
-        HAVING first_visit >= ? AND first_visit <= ?
-        ORDER BY cnt DESC, first_visit DESC
-        LIMIT 40
         "#,
         hidden_clause
     );
-    let mut new_stmt = conn.prepare(&new_sql)?;
-    let mut new_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(hidden_params.len() + 2);
-    for p in &hidden_params {
-        new_params.push(p.as_ref());
+    let mut stmt = conn.prepare(&sql)?;
+    let params_ref: Vec<&dyn rusqlite::ToSql> = hidden_params.iter().map(|p| p.as_ref()).collect();
+
+    struct DomainAgg {
+        total_cnt: u64,
+        first_visit: i64,
+        last_visit: i64,
+        sample_url: String,
+        sample_title: String,
+        best_url_cnt: u64,
     }
-    new_params.push(&min_time);
-    new_params.push(&max_time);
-    let new_rows = new_stmt.query_map(new_params.as_slice(), |row| {
-        Ok(NewDomainItem {
-            domain: row.get(0)?,
-            first_visit_time: row.get(1)?,
-            sample_title: row.get(2)?,
-            sample_url: row.get(3)?,
-            visits_in_period: row.get(4)?,
-        })
-    })?;
+
+    let mut domains: std::collections::HashMap<String, DomainAgg> =
+        std::collections::HashMap::new();
+    let mut rows = stmt.query(params_ref.as_slice())?;
+    while let Some(row) = rows.next()? {
+        let domain: String = row.get(0)?;
+        let title: String = row.get(1)?;
+        let url: String = row.get(2)?;
+        let cnt: u64 = row.get(3)?;
+        let min_t: i64 = row.get(4)?;
+        let max_t: i64 = row.get(5)?;
+
+        domains
+            .entry(domain)
+            .and_modify(|agg| {
+                agg.total_cnt += cnt;
+                if min_t < agg.first_visit {
+                    agg.first_visit = min_t;
+                }
+                if max_t > agg.last_visit {
+                    agg.last_visit = max_t;
+                }
+                if cnt > agg.best_url_cnt {
+                    agg.best_url_cnt = cnt;
+                    agg.sample_url = url.clone();
+                    agg.sample_title = title.clone();
+                }
+            })
+            .or_insert_with(|| DomainAgg {
+                total_cnt: cnt,
+                first_visit: min_t,
+                last_visit: max_t,
+                sample_url: url,
+                sample_title: title,
+                best_url_cnt: cnt,
+            });
+    }
+
     let mut new_domains = Vec::new();
-    for r in new_rows {
-        let item = r?;
-        new_domains.push(item);
-        if new_domains.len() >= 20 {
-            break;
+    let mut dormant_domains = Vec::new();
+    for (domain, agg) in domains {
+        if agg.first_visit >= min_time && agg.first_visit <= max_time {
+            new_domains.push(NewDomainItem {
+                domain,
+                first_visit_time: agg.first_visit,
+                sample_title: agg.sample_title,
+                sample_url: agg.sample_url,
+                visits_in_period: agg.total_cnt,
+            });
+        } else if agg.total_cnt >= 5 && agg.last_visit < min_time {
+            let days_dormant = if now_ms > agg.last_visit {
+                ((now_ms - agg.last_visit) / 86_400_000) as u64
+            } else {
+                0
+            };
+            dormant_domains.push(DormantDomainItem {
+                domain,
+                total_historical_visits: agg.total_cnt,
+                last_visit_time: agg.last_visit,
+                days_dormant,
+            });
         }
     }
 
-    // Dormant Domains: domain with >= 5 historical visits, but last_visit < min_time
-    let dormant_sql = format!(
-        r#"
-        SELECT u.domain, count(v.id) as total_cnt, max(v.visit_time) as last_time
-        FROM visits v
-        JOIN urls u ON v.url_id = u.id
-        WHERE u.domain IS NOT NULL AND u.domain != '' {}
-        GROUP BY u.domain
-        HAVING total_cnt >= 5 AND last_time < ?
-        ORDER BY total_cnt DESC, last_time DESC
-        LIMIT 40
-        "#,
-        hidden_clause
-    );
-    let mut dormant_stmt = conn.prepare(&dormant_sql)?;
-    let mut dormant_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(hidden_params.len() + 1);
-    for p in &hidden_params {
-        dormant_params.push(p.as_ref());
-    }
-    dormant_params.push(&min_time);
-    let dormant_rows = dormant_stmt.query_map(dormant_params.as_slice(), |row| {
-        let domain: String = row.get(0)?;
-        let total_historical_visits: u64 = row.get(1)?;
-        let last_visit_time: i64 = row.get(2)?;
-        let days_dormant = if now_ms > last_visit_time {
-            ((now_ms - last_visit_time) / 86_400_000) as u64
-        } else {
-            0
-        };
-        Ok(DormantDomainItem {
-            domain,
-            total_historical_visits,
-            last_visit_time,
-            days_dormant,
-        })
-    })?;
-    let mut dormant_domains = Vec::new();
-    for r in dormant_rows {
-        let item = r?;
-        dormant_domains.push(item);
-        if dormant_domains.len() >= 20 {
-            break;
-        }
-    }
+    new_domains.sort_by(|a, b| {
+        b.visits_in_period
+            .cmp(&a.visits_in_period)
+            .then_with(|| b.first_visit_time.cmp(&a.first_visit_time))
+    });
+    new_domains.truncate(20);
+
+    dormant_domains.sort_by(|a, b| {
+        b.total_historical_visits
+            .cmp(&a.total_historical_visits)
+            .then_with(|| b.last_visit_time.cmp(&a.last_visit_time))
+    });
+    dormant_domains.truncate(20);
 
     Ok(DomainDynamics {
         new_domains,
         dormant_domains,
     })
+}
+
+fn local_day_millis_bounds(year: i32, month: u32, day: u32) -> Option<(i64, i64)> {
+    use chrono::{Local, NaiveDate, TimeZone};
+    let date = NaiveDate::from_ymd_opt(year, month, day)?;
+    let next = date.succ_opt()?;
+    let start_ms = Local
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
+        .earliest()?
+        .timestamp_millis();
+    let next_ms = Local
+        .from_local_datetime(&next.and_hms_opt(0, 0, 0)?)
+        .earliest()?
+        .timestamp_millis();
+    Some((start_ms, next_ms - 1))
 }
 
 pub fn get_on_this_day(
@@ -2487,6 +2320,8 @@ pub fn get_on_this_day(
     page: Option<u32>,
     page_size: Option<u32>,
 ) -> AppResult<OnThisDayResult> {
+    use chrono::{Datelike, Local, TimeZone};
+
     let active_rules = get_active_privacy_rules(conn)?;
     let mut hidden_conds = Vec::new();
     let mut hidden_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -2497,191 +2332,137 @@ pub fn get_on_this_day(
         &mut hidden_conds,
         &mut hidden_params,
     );
-    let hidden_clause = if hidden_conds.is_empty() {
+    let has_hidden = !hidden_conds.is_empty();
+    let hidden_clause = if !has_hidden {
         String::new()
     } else {
         format!("AND {}", hidden_conds.join(" AND "))
     };
 
-    let date_str =
-        target_date.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
-
-    let (target_year, target_month_day) = if date_str.len() >= 10 {
-        let yr: i32 = date_str[0..4].parse().unwrap_or(2026);
-        let md = &date_str[5..10];
-        (yr, md.to_string())
-    } else {
-        (2026, "01-01".to_string())
-    };
-
-    // 1. 获取所有存在记录的历史年份列表 (倒序排序，覆盖历年)
-    let years_sql = format!(
-        r#"
-        SELECT DISTINCT CAST(strftime('%Y', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) as v_year
-        FROM visits v
-        JOIN urls u ON v.url_id = u.id
-        WHERE strftime('%m-%d', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) = ?
-          AND CAST(strftime('%Y', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) < ? {}
-        ORDER BY v_year DESC
-        "#,
-        hidden_clause
-    );
-    let mut years_stmt = conn.prepare(&years_sql)?;
-    let mut years_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 + hidden_params.len());
-    years_params.push(&target_month_day);
-    years_params.push(&target_year);
-    for b in &hidden_params {
-        years_params.push(b.as_ref());
-    }
-    let years_rows = years_stmt.query_map(years_params.as_slice(), |row| row.get::<_, i32>(0))?;
-    let mut available_years = Vec::new();
-    for y in years_rows {
-        available_years.push(y?);
+    let date_str = target_date.unwrap_or_else(|| Local::now().format("%Y-%m-%d").to_string());
+    let parsed_date = chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d")
+        .map_err(|_| AppError::Parse("无效的日期格式，应为 YYYY-MM-DD".into()))?;
+    let target_year = parsed_date.year();
+    let target_month = parsed_date.month();
+    let target_day = parsed_date.day();
+    let max_allowed_year = Local::now().year() + 1;
+    if !(1970..=max_allowed_year).contains(&target_year) {
+        return Err(AppError::Parse("查询年份超出合法范围".into()));
     }
 
     let p = page.unwrap_or(1).max(1);
     let ps = page_size.unwrap_or(30).clamp(1, 100);
     let offset = (p - 1) * ps;
 
-    // 2. 统计总数 (全历年或指定年份)
-    let total_count: u32 = if let Some(yr) = filter_year {
-        let count_sql = format!(
-            r#"
-            SELECT COUNT(*)
-            FROM visits v
-            JOIN urls u ON v.url_id = u.id
-            WHERE strftime('%m-%d', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) = ?
-              AND CAST(strftime('%Y', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) = ? {}
-            "#,
-            hidden_clause
-        );
-        let mut count_stmt = conn.prepare(&count_sql)?;
-        let mut count_params: Vec<&dyn rusqlite::ToSql> =
-            Vec::with_capacity(2 + hidden_params.len());
-        count_params.push(&target_month_day);
-        count_params.push(&yr);
-        for b in &hidden_params {
-            count_params.push(b.as_ref());
-        }
-        count_stmt.query_row(count_params.as_slice(), |row| row.get(0))?
-    } else {
-        let count_sql = format!(
-            r#"
-            SELECT COUNT(*)
-            FROM visits v
-            JOIN urls u ON v.url_id = u.id
-            WHERE strftime('%m-%d', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) = ?
-              AND CAST(strftime('%Y', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) < ? {}
-            "#,
-            hidden_clause
-        );
-        let mut count_stmt = conn.prepare(&count_sql)?;
-        let mut count_params: Vec<&dyn rusqlite::ToSql> =
-            Vec::with_capacity(2 + hidden_params.len());
-        count_params.push(&target_month_day);
-        count_params.push(&target_year);
-        for b in &hidden_params {
-            count_params.push(b.as_ref());
-        }
-        count_stmt.query_row(count_params.as_slice(), |row| row.get(0))?
+    let min_visit_opt: Option<i64> =
+        conn.query_row("SELECT MIN(visit_time) FROM visits", [], |r| r.get(0))?;
+    let Some(min_visit_ms) = min_visit_opt else {
+        return Ok(OnThisDayResult {
+            items: Vec::new(),
+            total_count: 0,
+            available_years: Vec::new(),
+            page: p,
+            page_size: ps,
+            total_pages: 1,
+        });
     };
 
+    let min_year = Local
+        .timestamp_opt(min_visit_ms / 1000, 0)
+        .earliest()
+        .map(|dt| dt.year())
+        .unwrap_or(1970)
+        .max(1970);
+
+    // Probe each candidate year using idx_visits_time_id range bounds instead of
+    // scanning the entire table with strftime().
+    let count_sql = if has_hidden {
+        format!(
+            "SELECT COUNT(*) FROM visits v JOIN urls u ON v.url_id = u.id WHERE v.visit_time >= ? AND v.visit_time <= ? {}",
+            hidden_clause
+        )
+    } else {
+        "SELECT COUNT(*) FROM visits v WHERE v.visit_time >= ? AND v.visit_time <= ?".to_string()
+    };
+    let mut count_stmt = conn.prepare(&count_sql)?;
+
+    let mut available_years = Vec::new();
+    let mut year_buckets: Vec<(i32, u32, i64, i64)> = Vec::new();
+    for yr in (min_year..target_year).rev() {
+        let Some((start_ms, end_ms)) = local_day_millis_bounds(yr, target_month, target_day) else {
+            continue;
+        };
+        let mut count_params: Vec<&dyn rusqlite::ToSql> =
+            Vec::with_capacity(2 + hidden_params.len());
+        count_params.push(&start_ms);
+        count_params.push(&end_ms);
+        for b in &hidden_params {
+            count_params.push(b.as_ref());
+        }
+        let cnt: u32 = count_stmt.query_row(count_params.as_slice(), |row| row.get(0))?;
+        if cnt > 0 {
+            available_years.push(yr);
+            year_buckets.push((yr, cnt, start_ms, end_ms));
+        }
+    }
+
+    let matching_buckets: Vec<&(i32, u32, i64, i64)> = match filter_year {
+        Some(fy) => year_buckets.iter().filter(|b| b.0 == fy).collect(),
+        None => year_buckets.iter().collect(),
+    };
+    let total_count: u32 = matching_buckets.iter().map(|b| b.1).sum();
     let total_pages = if total_count == 0 {
         1
     } else {
         total_count.div_ceil(ps)
     };
 
-    // 3. 分页查询
+    let page_sql = format!(
+        r#"
+        SELECT v.id, u.url, COALESCE(u.title, '') as title, COALESCE(u.domain, '') as domain,
+               v.visit_time
+        FROM visits v
+        JOIN urls u ON v.url_id = u.id
+        WHERE v.visit_time >= ? AND v.visit_time <= ? {}
+        ORDER BY v.visit_time DESC
+        LIMIT ? OFFSET ?
+        "#,
+        hidden_clause
+    );
+    let mut page_stmt = conn.prepare(&page_sql)?;
+
     let mut items = Vec::new();
-    if let Some(yr) = filter_year {
-        let page_sql = format!(
-            r#"
-            SELECT v.id, u.url, COALESCE(u.title, '') as title, COALESCE(u.domain, '') as domain,
-                   v.visit_time,
-                   CAST(strftime('%Y', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) as v_year
-            FROM visits v
-            JOIN urls u ON v.url_id = u.id
-            WHERE strftime('%m-%d', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) = ?
-              AND CAST(strftime('%Y', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) = ? {}
-            ORDER BY v.visit_time DESC
-            LIMIT ? OFFSET ?
-            "#,
-            hidden_clause
-        );
-        let mut stmt = conn.prepare(&page_sql)?;
+    let mut remaining_offset = offset;
+    for &(yr, cnt, start_ms, end_ms) in matching_buckets {
+        if items.len() >= ps as usize {
+            break;
+        }
+        if remaining_offset >= cnt {
+            remaining_offset -= cnt;
+            continue;
+        }
+        let need = (ps as usize - items.len()) as u32;
+        let local_offset = remaining_offset;
+        remaining_offset = 0;
+
         let mut page_params: Vec<&dyn rusqlite::ToSql> =
             Vec::with_capacity(4 + hidden_params.len());
-        page_params.push(&target_month_day);
-        page_params.push(&yr);
+        page_params.push(&start_ms);
+        page_params.push(&end_ms);
         for b in &hidden_params {
             page_params.push(b.as_ref());
         }
-        page_params.push(&ps);
-        page_params.push(&offset);
+        page_params.push(&need);
+        page_params.push(&local_offset);
 
-        let rows = stmt.query_map(page_params.as_slice(), |row| {
-            let id: i64 = row.get(0)?;
-            let url: String = row.get(1)?;
-            let title: String = row.get(2)?;
-            let domain: String = row.get(3)?;
-            let visit_time: i64 = row.get(4)?;
-            let v_year: i32 = row.get(5)?;
-            let years_ago = (target_year - v_year).max(1) as u32;
-
+        let years_ago = (target_year - yr).max(1) as u32;
+        let rows = page_stmt.query_map(page_params.as_slice(), |row| {
             Ok(OnThisDayItem {
-                id,
-                url,
-                title,
-                domain,
-                visit_time,
-                years_ago,
-            })
-        })?;
-        for r in rows {
-            items.push(r?);
-        }
-    } else {
-        let page_sql = format!(
-            r#"
-            SELECT v.id, u.url, COALESCE(u.title, '') as title, COALESCE(u.domain, '') as domain,
-                   v.visit_time,
-                   CAST(strftime('%Y', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) as v_year
-            FROM visits v
-            JOIN urls u ON v.url_id = u.id
-            WHERE strftime('%m-%d', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) = ?
-              AND CAST(strftime('%Y', datetime(v.visit_time / 1000, 'unixepoch', 'localtime')) AS INTEGER) < ? {}
-            ORDER BY v.visit_time DESC
-            LIMIT ? OFFSET ?
-            "#,
-            hidden_clause
-        );
-        let mut stmt = conn.prepare(&page_sql)?;
-        let mut page_params: Vec<&dyn rusqlite::ToSql> =
-            Vec::with_capacity(4 + hidden_params.len());
-        page_params.push(&target_month_day);
-        page_params.push(&target_year);
-        for b in &hidden_params {
-            page_params.push(b.as_ref());
-        }
-        page_params.push(&ps);
-        page_params.push(&offset);
-
-        let rows = stmt.query_map(page_params.as_slice(), |row| {
-            let id: i64 = row.get(0)?;
-            let url: String = row.get(1)?;
-            let title: String = row.get(2)?;
-            let domain: String = row.get(3)?;
-            let visit_time: i64 = row.get(4)?;
-            let v_year: i32 = row.get(5)?;
-            let years_ago = (target_year - v_year).max(1) as u32;
-
-            Ok(OnThisDayItem {
-                id,
-                url,
-                title,
-                domain,
-                visit_time,
+                id: row.get(0)?,
+                url: row.get(1)?,
+                title: row.get(2)?,
+                domain: row.get(3)?,
+                visit_time: row.get(4)?,
                 years_ago,
             })
         })?;
@@ -2741,25 +2522,14 @@ pub fn get_unindexed_urls(
     param_values.push(Box::new(model.to_string()));
 
     let rules = get_active_privacy_rules(conn)?;
-    for r in rules {
-        let pat = r.pattern.to_lowercase();
-        if let Some(suffix) = pat.strip_prefix("*.") {
-            exclude_conditions.push(
-                r#"NOT (COALESCE(u.domain, '') LIKE ? ESCAPE '\' OR COALESCE(u.domain, '') = ?)"#
-                    .to_string(),
-            );
-            param_values.push(Box::new(format!("%.{}", escape_like_literal(suffix))));
-            param_values.push(Box::new(suffix.to_string()));
-        } else {
-            exclude_conditions.push(
-                r#"NOT (COALESCE(u.domain, '') LIKE ? ESCAPE '\' OR COALESCE(u.url, '') LIKE ? ESCAPE '\')"#
-                    .to_string(),
-            );
-            let escaped = escape_like_literal(&pat);
-            param_values.push(Box::new(format!("%{}%", escaped)));
-            param_values.push(Box::new(format!("%{}%", escaped)));
-        }
-    }
+    build_rule_conditions(
+        &rules,
+        DataScope::Ai,
+        "u.domain",
+        "u.url",
+        &mut exclude_conditions,
+        &mut param_values,
+    );
 
     let extra_where = if exclude_conditions.is_empty() {
         String::new()
@@ -2802,25 +2572,14 @@ pub fn get_embedding_indexing_status(
     let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     let rules = get_active_privacy_rules(conn)?;
-    for r in rules {
-        let pat = r.pattern.to_lowercase();
-        if let Some(suffix) = pat.strip_prefix("*.") {
-            exclude_conditions.push(
-                r#"NOT (COALESCE(domain, '') LIKE ? ESCAPE '\' OR COALESCE(domain, '') = ?)"#
-                    .to_string(),
-            );
-            param_values.push(Box::new(format!("%.{}", escape_like_literal(suffix))));
-            param_values.push(Box::new(suffix.to_string()));
-        } else {
-            exclude_conditions.push(
-                r#"NOT (COALESCE(domain, '') LIKE ? ESCAPE '\' OR COALESCE(url, '') LIKE ? ESCAPE '\')"#
-                    .to_string(),
-            );
-            let escaped = escape_like_literal(&pat);
-            param_values.push(Box::new(format!("%{}%", escaped)));
-            param_values.push(Box::new(format!("%{}%", escaped)));
-        }
-    }
+    build_rule_conditions(
+        &rules,
+        DataScope::Ai,
+        "u.domain",
+        "u.url",
+        &mut exclude_conditions,
+        &mut param_values,
+    );
 
     let where_clause = if exclude_conditions.is_empty() {
         String::new()
@@ -2828,17 +2587,16 @@ pub fn get_embedding_indexing_status(
         format!("WHERE {}", exclude_conditions.join(" AND "))
     };
 
-    let total_sql = format!("SELECT count(*) FROM urls {}", where_clause);
-    let mut total_stmt = conn.prepare(&total_sql)?;
-    let rusqlite_params: Vec<&dyn rusqlite::ToSql> =
-        param_values.iter().map(|b| b.as_ref()).collect();
-    let total_urls: u64 = total_stmt.query_row(rusqlite_params.as_slice(), |r| r.get(0))?;
+    let sql = format!(
+        "SELECT COUNT(*), COALESCE(SUM(EXISTS(SELECT 1 FROM page_embeddings pe WHERE pe.url_id=u.id AND pe.model=?)),0)
+         FROM urls u {where_clause}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut params_ref: Vec<&dyn rusqlite::ToSql> = vec![&model];
+    params_ref.extend(param_values.iter().map(|value| value.as_ref()));
+    let (total_urls, indexed_urls): (u64, u64) =
+        stmt.query_row(params_ref.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))?;
 
-    let indexed_urls: u64 = conn.query_row(
-        "SELECT count(*) FROM page_embeddings WHERE model = ?1",
-        params![model],
-        |r| r.get(0),
-    )?;
     let pending_urls = total_urls.saturating_sub(indexed_urls);
 
     Ok(EmbeddingIndexingStatus {
@@ -2881,7 +2639,24 @@ pub fn find_similar_pages(
         None => return Ok(Vec::new()),
     };
 
-    let mut stmt = conn.prepare(
+    let active_rules = get_active_privacy_rules(conn)?;
+    let mut ai_conds = Vec::new();
+    let mut ai_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    build_rule_conditions(
+        &active_rules,
+        DataScope::Ai,
+        "u.domain",
+        "u.url",
+        &mut ai_conds,
+        &mut ai_params,
+    );
+    let ai_clause = if ai_conds.is_empty() {
+        String::new()
+    } else {
+        format!("AND {}", ai_conds.join(" AND "))
+    };
+
+    let sql = format!(
         r#"
         SELECT pe.url_id, u.url, COALESCE(u.title, ''), COALESCE(u.domain, ''),
                (SELECT count(*) FROM visits v WHERE v.url_id = u.id) as vc,
@@ -2889,13 +2664,20 @@ pub fn find_similar_pages(
                pe.embedding
         FROM page_embeddings pe
         JOIN urls u ON pe.url_id = u.id
-        WHERE pe.model = ?1 AND pe.url_id != ?2
+        WHERE pe.model = ?1 AND pe.url_id != ?2 {ai_clause}
         ORDER BY lvt DESC
         LIMIT 4000
-        "#,
-    )?;
+        "#
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut query_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(2 + ai_params.len());
+    query_params.push(&model);
+    query_params.push(&url_id);
+    for p in &ai_params {
+        query_params.push(p.as_ref());
+    }
 
-    let rows = stmt.query_map(params![model, url_id], |r| {
+    let rows = stmt.query_map(query_params.as_slice(), |r| {
         let u_id: i64 = r.get(0)?;
         let url: String = r.get(1)?;
         let title: String = r.get(2)?;
@@ -2914,7 +2696,6 @@ pub fn find_similar_pages(
         ))
     })?;
 
-    let active_rules = get_active_privacy_rules(conn)?;
     let mut scored = Vec::new();
     for r in rows {
         let (u_id, url, title, domain, vc, lvt, bytes) = r?;
@@ -2965,8 +2746,23 @@ pub fn hybrid_search_history(
     let trimmed = query.trim();
 
     let active_rules = get_active_privacy_rules(conn)?;
+    let mut ai_conds = Vec::new();
+    let mut ai_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    build_rule_conditions(
+        &active_rules,
+        DataScope::Ai,
+        "u.domain",
+        "u.url",
+        &mut ai_conds,
+        &mut ai_params,
+    );
+    let ai_clause = if ai_conds.is_empty() {
+        String::new()
+    } else {
+        format!("AND {}", ai_conds.join(" AND "))
+    };
 
-    // 1. FTS search
+    // 1. FTS search (filter AI privacy rules in SQL before LIMIT)
     if !trimmed.is_empty() {
         let cleaned: String = trimmed
             .chars()
@@ -2982,45 +2778,53 @@ pub fn hybrid_search_history(
 
         if !tokens.is_empty() {
             let fts_query = tokens.join(" ");
-            if let Ok(mut fts_stmt) = conn.prepare(
+            let fts_sql = format!(
                 r#"
                 SELECT u.id, u.url, COALESCE(u.title, ''), COALESCE(u.domain, ''),
                        (SELECT count(*) FROM visits v WHERE v.url_id = u.id) as vc,
                        COALESCE((SELECT max(v.visit_time) FROM visits v WHERE v.url_id = u.id), 0) as lvt
                 FROM urls_fts fts
                 JOIN urls u ON fts.rowid = u.id
-                WHERE urls_fts MATCH ?1
+                WHERE urls_fts MATCH ?1 {ai_clause}
                 ORDER BY rank
                 LIMIT 100
-                "#,
-            ) {
-                if let Ok(rows) = fts_stmt.query_map(params![fts_query], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, u64>(4)?,
-                        r.get::<_, i64>(5)?,
-                    ))
-                }) {
-                    let mut valid_rank = 0;
-                    for (id, url, title, domain, vc, lvt) in rows.flatten() {
-                        if active_rules.iter().any(|rule| matches_privacy_rule(&rule.pattern, &domain, &url)) {
-                            continue;
-                        }
-                        fts_ranks.insert(id, valid_rank);
-                        valid_rank += 1;
-                        url_details.insert(id, (url, title, domain, vc, lvt));
-                    }
+                "#
+            );
+            let mut fts_stmt = conn.prepare(&fts_sql)?;
+            let mut fts_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + ai_params.len());
+            fts_params.push(&fts_query);
+            for p in &ai_params {
+                fts_params.push(p.as_ref());
+            }
+            let rows = fts_stmt.query_map(fts_params.as_slice(), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, u64>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            })?;
+            let mut valid_rank = 0;
+            for row in rows {
+                let (id, url, title, domain, vc, lvt) = row?;
+                if active_rules
+                    .iter()
+                    .any(|rule| matches_privacy_rule(&rule.pattern, &domain, &url))
+                {
+                    continue;
                 }
+                fts_ranks.insert(id, valid_rank);
+                valid_rank += 1;
+                url_details.insert(id, (url, title, domain, vc, lvt));
             }
         }
     }
 
-    // 2. Vector search if query_vector is provided
+    // 2. Vector search if query_vector is provided (filter AI privacy rules in SQL before LIMIT)
     if let Some(q_vec) = query_vector {
-        let mut vec_stmt = conn.prepare(
+        let vec_sql = format!(
             r#"
             SELECT pe.url_id, u.url, COALESCE(u.title, ''), COALESCE(u.domain, ''),
                    (SELECT count(*) FROM visits v WHERE v.url_id = u.id) as vc,
@@ -3028,13 +2832,19 @@ pub fn hybrid_search_history(
                    pe.embedding
             FROM page_embeddings pe
             JOIN urls u ON pe.url_id = u.id
-            WHERE pe.model = ?1
+            WHERE pe.model = ?1 {ai_clause}
             ORDER BY lvt DESC
             LIMIT 4000
-            "#,
-        )?;
+            "#
+        );
+        let mut vec_stmt = conn.prepare(&vec_sql)?;
+        let mut vec_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + ai_params.len());
+        vec_params.push(&model);
+        for p in &ai_params {
+            vec_params.push(p.as_ref());
+        }
 
-        let rows = vec_stmt.query_map(params![model], |r| {
+        let rows = vec_stmt.query_map(vec_params.as_slice(), |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -3047,7 +2857,8 @@ pub fn hybrid_search_history(
         })?;
 
         let mut scored = Vec::new();
-        for (id, url, title, domain, vc, lvt, bytes) in rows.flatten() {
+        for row in rows {
+            let (id, url, title, domain, vc, lvt, bytes) = row?;
             if active_rules
                 .iter()
                 .any(|rule| matches_privacy_rule(&rule.pattern, &domain, &url))
@@ -3139,7 +2950,10 @@ pub fn hybrid_search_history(
 
 pub fn get_all_topics(conn: &Connection) -> AppResult<Vec<TopicItem>> {
     crate::ai::topics::ensure_default_topics(conn)?;
+    query_all_topics_readonly(conn)
+}
 
+pub fn query_all_topics_readonly(conn: &Connection) -> AppResult<Vec<TopicItem>> {
     let active_rules = get_active_privacy_rules(conn)?;
     let mut hidden_conds = Vec::new();
     let mut hidden_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -3156,15 +2970,16 @@ pub fn get_all_topics(conn: &Connection) -> AppResult<Vec<TopicItem>> {
         format!("AND {}", hidden_conds.join(" AND "))
     };
 
+    // (url_id, topic_id) is the primary key on url_topics, and visits(url_id) is indexed;
+    // a correlated scalar subquery avoids multiplying joined rows across full visit history.
     let sql = format!(
         r#"
         SELECT t.id, t.name, t.category, t.icon, t.color,
-               COUNT(v.id) as visit_count,
-               COUNT(DISTINCT CASE WHEN u.id IS NOT NULL THEN ut.url_id END) as url_count
+               COALESCE(SUM(CASE WHEN u.id IS NOT NULL THEN (SELECT COUNT(*) FROM visits v WHERE v.url_id = u.id) ELSE 0 END), 0) as visit_count,
+               COUNT(u.id) as url_count
         FROM topics t
         LEFT JOIN url_topics ut ON t.id = ut.topic_id
         LEFT JOIN urls u ON ut.url_id = u.id {}
-        LEFT JOIN visits v ON u.id = v.url_id
         GROUP BY t.id
         ORDER BY visit_count DESC
         "#,
@@ -3193,14 +3008,41 @@ pub fn get_all_topics(conn: &Connection) -> AppResult<Vec<TopicItem>> {
 }
 
 pub fn get_interest_evolution(conn: &Connection, days: u32) -> AppResult<InterestEvolution> {
+    interest_evolution_with_scope(conn, days, DataScope::Local)
+}
+
+pub fn query_interest_evolution_readonly(
+    conn: &Connection,
+    days: u32,
+) -> AppResult<InterestEvolution> {
+    query_interest_evolution_with_scope_readonly(conn, days, DataScope::Local)
+}
+
+pub fn get_interest_evolution_for_ai(conn: &Connection, days: u32) -> AppResult<InterestEvolution> {
+    interest_evolution_with_scope(conn, days, DataScope::Ai)
+}
+
+fn interest_evolution_with_scope(
+    conn: &Connection,
+    days: u32,
+    scope: DataScope,
+) -> AppResult<InterestEvolution> {
     crate::ai::topics::ensure_default_topics(conn)?;
     crate::ai::topics::auto_tag_unclassified_urls(conn, 300)?;
+    query_interest_evolution_with_scope_readonly(conn, days, scope)
+}
 
+fn query_interest_evolution_with_scope_readonly(
+    conn: &Connection,
+    days: u32,
+    scope: DataScope,
+) -> AppResult<InterestEvolution> {
     let active_rules = get_active_privacy_rules(conn)?;
     let mut hidden_conds = Vec::new();
     let mut hidden_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-    build_hidden_rule_conditions(
+    build_rule_conditions(
         &active_rules,
+        scope,
         "u.domain",
         "u.url",
         &mut hidden_conds,
@@ -3217,15 +3059,18 @@ pub fn get_interest_evolution(conn: &Connection, days: u32) -> AppResult<Interes
     let curr_start = now - period_ms;
     let prev_start = curr_start - period_ms;
 
+    // Drive from idx_visits_time_id on recent visits >= prev_start so queries touch only
+    // the active 2x window instead of scanning every historically tagged URL.
     let sql = format!(
         r#"
         SELECT t.id, t.name, t.category, t.icon, t.color,
                COALESCE(SUM(CASE WHEN v.visit_time >= ? THEN 1 ELSE 0 END), 0) as curr_visits,
                COALESCE(SUM(CASE WHEN v.visit_time >= ? AND v.visit_time < ? THEN 1 ELSE 0 END), 0) as prev_visits
-        FROM topics t
-        LEFT JOIN url_topics ut ON t.id = ut.topic_id
-        LEFT JOIN urls u ON ut.url_id = u.id {}
-        LEFT JOIN visits v ON u.id = v.url_id AND v.visit_time >= ?
+        FROM visits v
+        INNER JOIN urls u ON v.url_id = u.id
+        INNER JOIN url_topics ut ON u.id = ut.url_id
+        INNER JOIN topics t ON ut.topic_id = t.id
+        WHERE v.visit_time >= ? {}
         GROUP BY t.id
         HAVING curr_visits > 0 OR prev_visits > 0
         ORDER BY curr_visits DESC
@@ -3237,10 +3082,10 @@ pub fn get_interest_evolution(conn: &Connection, days: u32) -> AppResult<Interes
     query_params.push(&curr_start);
     query_params.push(&prev_start);
     query_params.push(&curr_start);
+    query_params.push(&prev_start);
     for b in &hidden_params {
         query_params.push(b.as_ref());
     }
-    query_params.push(&prev_start);
 
     let rows = stmt.query_map(query_params.as_slice(), |r| {
         let topic_id: i64 = r.get(0)?;
@@ -3303,6 +3148,395 @@ pub fn get_interest_evolution(conn: &Connection, days: u32) -> AppResult<Interes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_policy_filters_before_limits_and_counts_the_same_eligible_set() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
+        conn.execute_batch("INSERT INTO sources(id,browser,profile,source_type,history_path) VALUES(1,'chrome','Default','sqlite','synthetic');
+            INSERT INTO urls(id,url,title,domain) VALUES
+            (1,'https://public.example/old','Needle public older','public.example'),
+            (2,'https://public.example/recent','Needle public recent','public.example'),
+            (3,'https://private.example/secret','Needle private sentinel','private.example'),
+            (4,'http://127.0.0.1/internal','Needle loopback sentinel','127.0.0.1'),
+            (5,'http://[::1]/internal','Needle IPv6 sentinel','[::1]'),
+            (6,'http://localhost/internal','Needle localhost sentinel','localhost'),
+            (7,'http://10.1.2.3/internal','Needle LAN sentinel','10.1.2.3'),
+            (8,'file:///C:/synthetic/note.txt','Needle file sentinel',''),
+            (9,'https://hidden.example/page','Needle hidden sentinel','hidden.example');
+            WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<240)
+            INSERT INTO visits(source_id,url_id,source_visit_id,visit_time,event_hash,imported_at)
+            SELECT 1,CASE WHEN i<3 THEN i WHEN i<120 THEN 2 ELSE 3 END,i,i,'ai-policy-'||i,0 FROM n;").unwrap();
+        let private = add_privacy_rule(&conn, "private.example", "private").unwrap();
+        add_privacy_rule(&conn, "hidden.example", "hidden").unwrap();
+        for query in ["", "Needle", "public.example/"] {
+            let citations = query_history_for_ai(&conn, query, 2).unwrap();
+            assert_eq!(citations.len(), 2, "query: {query}");
+            assert_eq!(citations[0].url, "https://public.example/recent");
+            assert_eq!(citations[1].url, "https://public.example/old");
+        }
+        assert!(query_history_for_ai(&conn, "", 0).unwrap().is_empty());
+        let candidates = get_unindexed_urls(&conn, "fixture", 100).unwrap();
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .iter()
+            .all(|(_, url, _, _)| url.starts_with("https://public.example/")));
+        save_page_embeddings(
+            &conn,
+            &[
+                (1, "public".into(), vec![1.0, 0.0], "fixture"),
+                (3, "old private".into(), vec![0.0, 1.0], "fixture"),
+            ],
+        )
+        .unwrap();
+        let status = get_embedding_indexing_status(&conn, "fixture").unwrap();
+        assert_eq!(
+            (status.total_urls, status.indexed_urls, status.pending_urls),
+            (2, 1, 1)
+        );
+        toggle_privacy_rule(&conn, private.id, false).unwrap();
+        let status = get_embedding_indexing_status(&conn, "fixture").unwrap();
+        assert_eq!(
+            (status.total_urls, status.indexed_urls, status.pending_urls),
+            (3, 2, 1)
+        );
+        conn.execute(
+            "UPDATE privacy_rules SET enabled=0 WHERE pattern='ip:non-public'",
+            [],
+        )
+        .unwrap();
+        let candidates = get_unindexed_urls(&conn, "fixture", 100).unwrap();
+        assert!(candidates
+            .iter()
+            .any(|(_, url, _, _)| url.contains("[::1]")));
+        // Older literal rules remain effective independently of the new token.
+        assert!(candidates
+            .iter()
+            .all(|(_, url, _, _)| !url.contains("127.0.0.1")));
+        assert!(candidates
+            .iter()
+            .all(|(_, url, _, _)| !url.starts_with("file:")));
+        let empty = get_embedding_indexing_status(&conn, "other-model").unwrap();
+        assert_eq!(empty.indexed_urls, 0);
+    }
+
+    #[test]
+    fn ai_interest_scope_excludes_private_contributions_without_hiding_local_history() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
+        conn.execute_batch("INSERT INTO sources(id,browser,profile,source_type,history_path) VALUES(1,'chrome','Default','sqlite','synthetic');
+            INSERT INTO urls(id,url,title,domain) VALUES
+            (1,'https://public.example/page','Public','public.example'),
+            (2,'https://private.example/page','Secret','private.example'),
+            (3,'http://127.0.0.1/page','Internal','127.0.0.1'),
+            (4,'file:///C:/synthetic/note.txt','Local file','');
+            INSERT INTO topics(id,name,category,created_at) VALUES(1001,'Synthetic mixed','fixture',0),(1002,'Synthetic private only','fixture',0),(1003,'Synthetic internal only','fixture',0),(1004,'Synthetic file only','fixture',0);
+            INSERT INTO url_topics(url_id,topic_id) VALUES(1,1001),(2,1001),(2,1002),(3,1003),(4,1004);").unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        for id in 1..=4 {
+            conn.execute("INSERT INTO visits(source_id,url_id,source_visit_id,visit_time,event_hash,imported_at) VALUES(1,?1,?1,?2,?3,0)",params![id,now,format!("ai-evolution-{id}")]).unwrap();
+        }
+        add_privacy_rule(&conn, "private.example", "private").unwrap();
+        let local = get_interest_evolution(&conn, 30).unwrap();
+        let ai = get_interest_evolution_for_ai(&conn, 30).unwrap();
+        let local_topics: Vec<_> = local
+            .new_topics
+            .iter()
+            .chain(&local.rising_topics)
+            .chain(&local.stable_topics)
+            .chain(&local.declining_topics)
+            .collect();
+        let ai_topics: Vec<_> = ai
+            .new_topics
+            .iter()
+            .chain(&ai.rising_topics)
+            .chain(&ai.stable_topics)
+            .chain(&ai.declining_topics)
+            .collect();
+        assert_eq!(
+            local_topics
+                .iter()
+                .find(|t| t.topic_id == 1001)
+                .unwrap()
+                .current_visits,
+            2
+        );
+        assert!(local_topics.iter().any(|t| t.topic_id == 1002));
+        assert_eq!(
+            ai_topics
+                .iter()
+                .find(|t| t.topic_id == 1001)
+                .unwrap()
+                .current_visits,
+            1
+        );
+        assert!(ai_topics.iter().all(|t| !matches!(t.topic_id, 1002..=1004)));
+    }
+
+    #[test]
+    fn builtin_network_rule_is_persisted_toggleable_and_consistent_with_sql() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
+        conn.execute_batch("INSERT INTO sources(id,browser,profile,source_type,history_path) VALUES(1,'chrome','Synthetic','sqlite','fixture');INSERT INTO urls(id,url,title,domain) VALUES(1,'http://192.168.2.1/wiki','LAN','192.168.2.1'),(2,'http://[fd00::1]/wiki','LAN v6','fd00::1'),(3,'https://public-fixture.test/wiki','Public','public-fixture.test');INSERT INTO visits(id,source_id,url_id,source_visit_id,visit_time,visit_duration,event_hash,imported_at) VALUES(1,1,1,1,1000,0,'network-1',0),(2,1,2,2,2000,0,'network-2',0),(3,1,3,3,3000,0,'network-3',0);").unwrap();
+        assert_eq!(
+            query_history(&conn, &HistoryFilter::default())
+                .unwrap()
+                .items
+                .len(),
+            3
+        );
+        let ai = query_history_for_ai(&conn, "", 10).unwrap();
+        assert_eq!(ai.len(), 1);
+        assert_eq!(ai[0].domain, "public-fixture.test");
+        conn.execute(
+            "UPDATE privacy_rules SET rule_type='hidden' WHERE pattern='ip:non-public'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            query_history(&conn, &HistoryFilter::default())
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert_eq!(
+            get_analytics_summary(&conn, None, None, None)
+                .unwrap()
+                .total_visits,
+            1
+        );
+        conn.execute(
+            "UPDATE privacy_rules SET enabled=0 WHERE pattern='ip:non-public'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(query_history_for_ai(&conn, "", 10).unwrap().len(), 3);
+        assert!(matches_privacy_rule(
+            "ip:non-public",
+            "",
+            "http://[::ffff:10.1.2.3]/"
+        ));
+        assert!(!matches_privacy_rule(
+            "ip:non-public",
+            "",
+            "https://localhost.evil.test/"
+        ));
+    }
+
+    #[test]
+    fn multi_chunk_delete_rolls_back_on_late_failure_and_cancellation() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
+        conn.execute_batch("INSERT INTO sources(id,browser,profile,source_type,history_path) VALUES(1,'chrome','Synthetic','sqlite','fixture');INSERT INTO urls(id,url,title,domain) VALUES(1,'https://delete-fixture.test/','Synthetic','delete-fixture.test');WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<1001) INSERT INTO visits(id,source_id,url_id,source_visit_id,visit_time,visit_duration,event_hash,imported_at) SELECT i,1,1,i,i,0,'delete-fixture-'||i,0 FROM n;CREATE TRIGGER fail_late_delete BEFORE DELETE ON visits WHEN OLD.id=501 BEGIN SELECT RAISE(ABORT,'synthetic delete failure'); END;").unwrap();
+        let ids: Vec<i64> = (1..=1001).collect();
+        assert!(delete_visits(&conn, &ids).is_err());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM visits", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1001
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM visit_exclusions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "a failed delete transaction must not leave exclusion rows"
+        );
+        conn.execute_batch("DROP TRIGGER fail_late_delete;")
+            .unwrap();
+        let checks = std::cell::Cell::new(0);
+        let result = delete_visits_checked(&conn, &ids, || {
+            checks.set(checks.get() + 1);
+            if checks.get() >= 3 {
+                Err(AppError::VaultLocked("synthetic cancellation".into()))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM visits", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1001
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM visit_exclusions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "cancellation must roll back inserted exclusions"
+        );
+        assert_eq!(delete_visits(&conn, &ids).unwrap(), 1001);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM visit_exclusions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1001
+        );
+    }
+
+    #[test]
+    fn sessions_include_later_sources_after_ten_thousand_rows_and_keep_recent_limit() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
+        conn.execute_batch("INSERT INTO sources(id,browser,profile,source_type,history_path) VALUES(1,'chrome','First','sqlite','fixture'),(2,'edge','Later','sqlite','fixture');INSERT INTO urls(id,url,title,domain) VALUES(1,'https://sessions-fixture.test/','Synthetic','sessions-fixture.test');WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<10003) INSERT INTO visits(id,source_id,url_id,source_visit_id,visit_time,visit_duration,event_hash,imported_at) SELECT i,1,1,i,i*1000,0,'sessions-fixture-'||i,0 FROM n;INSERT INTO visits(id,source_id,url_id,source_visit_id,visit_time,visit_duration,event_hash,imported_at) VALUES(10004,2,1,1,20000000,0,'later-fixture',0);").unwrap();
+        let all = get_research_sessions(&conn, None, 10).unwrap();
+        assert_eq!(all.iter().map(|s| s.visit_count as u64).sum::<u64>(), 10004);
+        let latest = get_research_sessions(&conn, None, 1).unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].profile, "Later");
+        add_privacy_rule(&conn, "sessions-fixture.test", "private").unwrap();
+        assert_eq!(get_research_sessions(&conn, None, 10).unwrap().len(), 2);
+        assert!(get_research_sessions_for_ai(&conn, None, 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn analytics_preserves_local_calendar_privacy_and_window_semantics() {
+        use chrono::{Datelike, TimeZone, Timelike};
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
+        conn.execute_batch("INSERT INTO sources(id,browser,profile,source_type,history_path) VALUES(1,'chrome','Default','sqlite','synthetic'),(2,'firefox','Default','sqlite','synthetic');
+            INSERT INTO urls(id,url,title,domain) VALUES
+            (1,'https://allowed.test/news','Allowed','allowed.test'),
+            (2,'https://private.test/news','Private','private.test'),
+            (3,'https://allowed.test/hidden','Hidden URL','allowed.test'),
+            (4,'https://hidden.test/news','Hidden domain','hidden.test'),
+            (5,'https://missing-domain.test/','Null domain',NULL),
+            (6,'https://empty-domain.test/','Empty domain','');").unwrap();
+        add_privacy_rule(&conn, "allowed.test/hidden", "hidden").unwrap();
+        add_privacy_rule(&conn, "hidden.test", "hidden").unwrap();
+        add_privacy_rule(&conn, "private.test", "private").unwrap();
+        let start = 1_700_000_000_000i64;
+        let hour = 3_600_000;
+        let end = start + 24 * hour;
+        let visits = [
+            (1, start - 1000),
+            (1, start),
+            (1, start + hour + 123),
+            (1, end),
+            (2, start + 2 * hour),
+            (2, start + 26 * hour),
+            (2, start + 27 * hour),
+            (3, start - 500),
+            (3, start + 5 * hour),
+            (3, start + 6 * hour),
+            (4, start + 7 * hour),
+            (4, start + 8 * hour),
+            (4, start + 9 * hour),
+            (5, start + 3 * hour),
+            (6, start + 4 * hour),
+        ];
+        let mut expected_days = std::collections::BTreeMap::<String, u64>::new();
+        let mut expected_hours = [0u64; 24];
+        let mut expected_week = [0u64; 168];
+        for (index, (url, time)) in visits.into_iter().enumerate() {
+            let source = if url == 2 || url == 6 { 2 } else { 1 };
+            conn.execute("INSERT INTO visits(id,source_id,url_id,source_visit_id,visit_time,event_hash,imported_at) VALUES(?1,?2,?3,?1,?4,?5,?4)",params![index as i64+1,source,url,time,format!("analytics-{index}")]).unwrap();
+            if ![3, 4].contains(&url) && time >= start && time <= end {
+                let local = chrono::Local.timestamp_millis_opt(time).single().unwrap();
+                *expected_days
+                    .entry(local.format("%Y-%m-%d").to_string())
+                    .or_default() += 1;
+                expected_hours[local.hour() as usize] += 1;
+                expected_week[local.weekday().num_days_from_sunday() as usize * 24
+                    + local.hour() as usize] += 1;
+            }
+        }
+        let actual = get_analytics_summary(&conn, Some(start), Some(end), Some(1)).unwrap();
+        assert_eq!(
+            (
+                actual.total_visits,
+                actual.unique_urls,
+                actual.unique_domains
+            ),
+            (6, 4, 2)
+        );
+        assert_eq!(actual.active_days, expected_days.len() as u64);
+        assert_eq!(actual.revisit_rate, 33.3);
+        assert_eq!(
+            (
+                actual.period_comparison.previous_count,
+                actual.period_comparison.growth_rate
+            ),
+            (1, 500.0)
+        );
+        assert_eq!(
+            actual
+                .daily_trend
+                .iter()
+                .map(|d| (d.date.clone(), d.count))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            expected_days
+        );
+        assert_eq!(
+            actual
+                .hourly_distribution
+                .iter()
+                .map(|h| h.count)
+                .collect::<Vec<_>>(),
+            expected_hours.to_vec()
+        );
+        assert_eq!(
+            actual
+                .weekly_heatmap
+                .iter()
+                .map(|h| h.count)
+                .collect::<Vec<_>>(),
+            expected_week.to_vec()
+        );
+        assert_eq!(
+            actual
+                .forgotten_gems
+                .iter()
+                .map(|g| (g.url_id, g.total_visits))
+                .collect::<Vec<_>>(),
+            vec![(1, 4), (2, 3)]
+        );
+        assert_eq!(
+            actual
+                .browser_breakdown
+                .iter()
+                .map(|b| (b.name.as_str(), b.count, b.percent))
+                .collect::<Vec<_>>(),
+            vec![("chrome", 4, 67), ("firefox", 2, 33)]
+        );
+        assert!(!actual
+            .domain_ranking
+            .iter()
+            .any(|d| d.domain == "hidden.test"));
+        let empty = get_analytics_summary(
+            &conn,
+            Some(start + 60 * hour),
+            Some(start + 61 * hour),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                empty.total_visits,
+                empty.unique_urls,
+                empty.unique_domains,
+                empty.active_days
+            ),
+            (0, 0, 0, 0)
+        );
+        assert!(empty.daily_trend.is_empty());
+        assert!(empty.hourly_distribution.iter().all(|h| h.count == 0));
+        assert_eq!(
+            empty.forgotten_gems.len(),
+            2,
+            "forgotten pages retain their existing all-history scope"
+        );
+        conn.execute("UPDATE visits SET visit_time=?1 WHERE id=2", [i64::MAX])
+            .unwrap();
+        assert!(
+            get_analytics_summary(&conn, Some(0), Some(i64::MAX), None).is_err(),
+            "invalid calendar values must not silently disappear"
+        );
+    }
 
     #[test]
     fn test_extract_search_query_engines() {
@@ -3882,5 +4116,186 @@ mod tests {
         let candidates = get_unindexed_urls(&conn, "test-model", 10).unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].1, "https://fooXbar.example/page");
+    }
+
+    #[test]
+    fn hybrid_search_similar_pages_and_ai_history_filter_privacy_before_sql_limits() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO sources(id,browser,profile,source_type,history_path) VALUES(1,'chrome','Default','sqlite','synthetic')",
+            [],
+        )
+        .unwrap();
+        add_privacy_rule(&conn, "private.example", "private").unwrap();
+        add_privacy_rule(&conn, "hidden.example", "hidden").unwrap();
+
+        conn.execute(
+            "INSERT INTO urls(id,url,title,domain) VALUES(1,'https://public.example/rust-guide','Rust Needle Guide','public.example')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO visits(id,source_id,url_id,source_visit_id,visit_time,event_hash,imported_at) VALUES(1,1,1,1,100,'pub-1',0)",
+            [],
+        )
+        .unwrap();
+        save_page_embeddings(&conn, &[(1, "public".into(), vec![1.0, 0.0], "fixture")]).unwrap();
+
+        conn.execute(
+            "INSERT INTO urls(id,url,title,domain) VALUES(2,'https://public.example/rust-anchor','Rust Anchor','public.example')",
+            [],
+        )
+        .unwrap();
+        save_page_embeddings(&conn, &[(2, "anchor".into(), vec![0.99, 0.01], "fixture")]).unwrap();
+
+        for idx in 10..=135i64 {
+            let (url, domain) = if idx % 3 == 0 {
+                (
+                    format!("http://127.0.0.1/item/{idx}"),
+                    "127.0.0.1".to_string(),
+                )
+            } else if idx % 3 == 1 {
+                (
+                    format!("https://private.example/item/{idx}"),
+                    "private.example".to_string(),
+                )
+            } else {
+                (format!("file:///C:/synthetic/{idx}.html"), String::new())
+            };
+            conn.execute(
+                "INSERT INTO urls(id,url,title,domain) VALUES(?1,?2,'Rust Needle Secret',?3)",
+                params![idx, url, domain],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO visits(id,source_id,url_id,source_visit_id,visit_time,event_hash,imported_at) VALUES(?1,1,?1,?1,?2,?3,0)",
+                params![idx, idx * 1000, format!("priv-{idx}")],
+            )
+            .unwrap();
+            save_page_embeddings(&conn, &[(idx, "priv".into(), vec![1.0, 0.0], "fixture")])
+                .unwrap();
+        }
+
+        let hybrid_fts = hybrid_search_history(&conn, "Needle", None, "fixture", 10).unwrap();
+        assert_eq!(hybrid_fts.len(), 1);
+        assert_eq!(hybrid_fts[0].url, "https://public.example/rust-guide");
+
+        let hybrid =
+            hybrid_search_history(&conn, "Needle", Some(&[1.0, 0.0]), "fixture", 10).unwrap();
+        assert_eq!(hybrid.len(), 2);
+        assert_eq!(hybrid[0].url, "https://public.example/rust-guide");
+        assert!(hybrid
+            .iter()
+            .all(|item| item.url.starts_with("https://public.example/")));
+
+        let similar = find_similar_pages(&conn, 2, "fixture", 10).unwrap();
+        assert_eq!(similar.len(), 1);
+        assert_eq!(similar[0].url, "https://public.example/rust-guide");
+
+        let local_history = query_history(
+            &conn,
+            &HistoryFilter {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(local_history
+            .items
+            .iter()
+            .any(|item| item.domain == "private.example"));
+
+        let ai_history = query_history(
+            &conn,
+            &HistoryFilter {
+                limit: Some(10),
+                ai_scope: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(ai_history.items.len(), 1);
+        assert_eq!(ai_history.items[0].url, "https://public.example/rust-guide");
+    }
+
+    #[test]
+    fn on_this_day_rejects_non_ascii_and_out_of_range_dates_without_panic() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO sources(id,browser,profile,source_type,history_path) VALUES(1,'chrome','Default','sqlite','synthetic')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO urls(id,url,title,domain) VALUES(1,'https://example.test/','Ex','example.test')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO visits(id,source_id,url_id,source_visit_id,visit_time,event_hash,imported_at) VALUES(1,1,1,1,1700000000000,'h1',0)",
+            [],
+        )
+        .unwrap();
+
+        assert!(get_on_this_day(&conn, Some("2026年11月19日".into()), None, None, None).is_err());
+        assert!(get_on_this_day(&conn, Some("9999-01-01".into()), None, None, None).is_err());
+        assert!(get_on_this_day(&conn, Some("1800-01-01".into()), None, None, None).is_err());
+        assert!(get_on_this_day(&conn, Some("2026-11-19".into()), None, None, None).is_ok());
+    }
+
+    #[test]
+    fn readonly_topic_and_evolution_queries_respect_privacy_and_query_only() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::database::migrations::run_migrations(&mut conn).unwrap();
+        crate::ai::topics::ensure_default_topics(&conn).unwrap();
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let day_ms = 86_400_000i64;
+        conn.execute_batch(
+            "INSERT INTO sources(id,browser,profile,source_type,history_path) VALUES(1,'chrome','Default','sqlite','synthetic');
+             INSERT INTO urls(id,url,title,domain) VALUES
+               (1,'https://github.com/rust-lang/rust','GitHub Rust','github.com'),
+               (2,'https://secret.github.com/private','GitHub Private','secret.github.com');",
+        )
+        .unwrap();
+        add_privacy_rule(&conn, "secret.github.com", "hidden").unwrap();
+        conn.execute(
+            "INSERT INTO visits(id,source_id,url_id,source_visit_id,visit_time,event_hash,imported_at) VALUES
+               (1,1,1,1,?1,'h1',0),
+               (2,1,1,2,?2,'h2',0),
+               (3,1,1,3,?3,'h3',0),
+               (4,1,2,4,?1,'h4',0);",
+            rusqlite::params![now_ms - day_ms, now_ms - 2 * day_ms, now_ms - 40 * day_ms],
+        )
+        .unwrap();
+
+        let tagged = crate::ai::topics::auto_tag_unclassified_urls(&conn, 100).unwrap();
+        assert!(tagged > 0);
+
+        conn.pragma_update(None, "query_only", true).unwrap();
+        let ro_topics = query_all_topics_readonly(&conn).unwrap();
+        let ro_evolution = query_interest_evolution_readonly(&conn, 30).unwrap();
+        conn.pragma_update(None, "query_only", false).unwrap();
+
+        let rw_topics = get_all_topics(&conn).unwrap();
+        let rw_evolution = get_interest_evolution(&conn, 30).unwrap();
+
+        assert_eq!(ro_topics.len(), rw_topics.len());
+        let ro_top = &ro_topics[0];
+        let rw_top = &rw_topics[0];
+        assert_eq!(ro_top.id, rw_top.id);
+        assert_eq!(ro_top.visit_count, 3);
+        assert_eq!(ro_top.visit_count, rw_top.visit_count);
+        assert_eq!(ro_top.url_count, 1);
+        assert_eq!(ro_top.url_count, rw_top.url_count);
+
+        assert_eq!(
+            ro_evolution.rising_topics.len(),
+            rw_evolution.rising_topics.len()
+        );
+        assert_eq!(ro_evolution.rising_topics[0].current_visits, 2);
+        assert_eq!(ro_evolution.rising_topics[0].previous_visits, 1);
     }
 }

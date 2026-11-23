@@ -355,9 +355,110 @@ const MIGRATIONS: &[Migration] = &[
         CREATE INDEX IF NOT EXISTS idx_background_jobs_status ON background_jobs(status, updated_at DESC);
         "#,
     },
+    Migration {
+        version: 12,
+        description: "Add encrypted content storage columns to offline_archives table",
+        sql: r#"
+        ALTER TABLE offline_archives ADD COLUMN markdown_content TEXT;
+        ALTER TABLE offline_archives ADD COLUMN snapshot_html_compressed BLOB;
+        "#,
+    },
+    Migration {
+        version: 13,
+        description:
+            "Preserve and verify every legacy offline archive file inside encrypted storage",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS legacy_archive_files (
+            page_uuid TEXT NOT NULL,
+            relative_name TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            content BLOB NOT NULL,
+            PRIMARY KEY(page_uuid, relative_name)
+        );
+        CREATE TABLE IF NOT EXISTS legacy_archive_migrations (
+            page_uuid TEXT PRIMARY KEY,
+            manifest_sha256 TEXT NOT NULL,
+            file_count INTEGER NOT NULL,
+            total_bytes INTEGER NOT NULL,
+            verified_at INTEGER NOT NULL
+        );
+        "#,
+    },
+    Migration {
+        version: 14,
+        description: "Default configurable non-public IP and local-host AI exclusion",
+        sql: "INSERT INTO privacy_rules(pattern,rule_type,enabled,created_at) SELECT 'ip:non-public','private',1,0 WHERE NOT EXISTS(SELECT 1 FROM privacy_rules WHERE lower(pattern)='ip:non-public');",
+    },
+    Migration {
+        version: 15,
+        description: "Add covering visits(url_id, visit_time) index and refresh SQLite query planner statistics",
+        sql: r#"
+        CREATE INDEX IF NOT EXISTS idx_visits_url_time ON visits(url_id, visit_time DESC);
+        ANALYZE;
+        "#,
+    },
+    Migration {
+        version: 16,
+        description: "Add auto_sync_runs table, import_jobs trigger lineage, and default auto_sync settings",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS auto_sync_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_uuid TEXT UNIQUE NOT NULL,
+            trigger_type TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            finished_at INTEGER,
+            status TEXT NOT NULL,
+            sources_total INTEGER NOT NULL DEFAULT 0,
+            sources_succeeded INTEGER NOT NULL DEFAULT 0,
+            sources_skipped INTEGER NOT NULL DEFAULT 0,
+            sources_failed INTEGER NOT NULL DEFAULT 0,
+            total_read INTEGER NOT NULL DEFAULT 0,
+            total_inserted INTEGER NOT NULL DEFAULT 0,
+            total_duplicate INTEGER NOT NULL DEFAULT 0,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            error_summary TEXT,
+            details_json TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_auto_sync_runs_started ON auto_sync_runs(started_at DESC);
+
+        ALTER TABLE import_jobs ADD COLUMN trigger_type TEXT NOT NULL DEFAULT 'manual';
+        ALTER TABLE import_jobs ADD COLUMN run_id INTEGER REFERENCES auto_sync_runs(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_import_jobs_run_id ON import_jobs(run_id);
+
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_sync_enabled', '0');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_sync_interval_days', '30');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_sync_last_run_at', '');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_sync_last_success_at', '');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_sync_next_run_at', '');
+        INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_sync_last_exe_path', '');
+        "#,
+    },
+    Migration {
+        version: 17,
+        description: "Persist user-deleted visit exclusions across source resyncs",
+        sql: r#"
+        CREATE TABLE IF NOT EXISTS visit_exclusions (
+            event_hash TEXT PRIMARY KEY,
+            source_id INTEGER NOT NULL,
+            source_visit_id INTEGER NOT NULL,
+            deleted_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_visit_exclusions_source
+            ON visit_exclusions(source_id, source_visit_id);
+        "#,
+    },
 ];
 
+pub fn latest_schema_version() -> i32 {
+    MIGRATIONS
+        .last()
+        .map(|migration| migration.version)
+        .unwrap_or(0)
+}
+
 pub fn run_migrations(conn: &mut Connection) -> AppResult<()> {
+    crate::database::sqlcipher::register_privacy_functions(conn)?;
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -368,13 +469,16 @@ pub fn run_migrations(conn: &mut Connection) -> AppResult<()> {
         "#,
     )?;
 
-    let current_version: i32 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let current_version: i32 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |row| row.get(0),
+    )?;
+    if current_version > latest_schema_version() {
+        return Err(crate::error::AppError::Migration(
+            "数据库版本高于本程序支持的版本，拒绝升级或开放业务访问".into(),
+        ));
+    }
 
     info!("Current database schema version: {}", current_version);
 

@@ -46,6 +46,13 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             "lock" => {
+                if let Some(state) = app.try_state::<crate::database::DbState>() {
+                    let vault = state.vault.clone();
+                    vault.revoke_active_session();
+                    std::thread::spawn(move || {
+                        let _ = vault.lock();
+                    });
+                }
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.emit("browsory://lock", ());
                 }

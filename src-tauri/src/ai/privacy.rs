@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 
 static EMAIL_REGEX: OnceLock<Regex> = OnceLock::new();
 static URL_PARAM_REGEX: OnceLock<Regex> = OnceLock::new();
+static ENCODED_URL_PARAM_REGEX: OnceLock<Regex> = OnceLock::new();
 static BEARER_REGEX: OnceLock<Regex> = OnceLock::new();
 static CHINESE_ID_REGEX: OnceLock<Regex> = OnceLock::new();
 static PHONE_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -14,9 +15,42 @@ fn get_email_regex() -> &'static Regex {
 }
 
 fn get_url_param_regex() -> &'static Regex {
-    URL_PARAM_REGEX.get_or_init(|| {
-        Regex::new(r"(?i)([?&](?:token|access_token|secret|password|passwd|auth|api_key|key|session|code|sign)=)[^&\s#]+").expect("Valid regex")
-    })
+    URL_PARAM_REGEX
+        .get_or_init(|| Regex::new(r"(?i)([?&#])([^=&#\s]+)=([^&#\s]*)").expect("Valid regex"))
+}
+
+fn get_encoded_url_param_regex() -> &'static Regex {
+    ENCODED_URL_PARAM_REGEX
+        .get_or_init(|| Regex::new(r"(?i)([?&#])([^&#\s]+)%3[dD]([^&#\s]*)").expect("Valid regex"))
+}
+
+fn is_sensitive_url_key(raw_key: &str) -> bool {
+    let decoded = url::form_urlencoded::parse(raw_key.as_bytes())
+        .next()
+        .map(|(key, _)| key.into_owned())
+        .unwrap_or_else(|| raw_key.to_string());
+    matches!(
+        decoded.to_ascii_lowercase().as_str(),
+        "token"
+            | "access_token"
+            | "refresh_token"
+            | "id_token"
+            | "secret"
+            | "client_secret"
+            | "password"
+            | "passwd"
+            | "auth"
+            | "api_key"
+            | "key"
+            | "session"
+            | "sessionid"
+            | "sid"
+            | "jwt"
+            | "credential"
+            | "code"
+            | "sign"
+            | "signature"
+    )
 }
 
 fn get_bearer_regex() -> &'static Regex {
@@ -49,7 +83,26 @@ pub fn sanitize_prompt_for_ai(input: &str, is_local: bool) -> String {
 
     // 1. Redact URL sensitive parameters (tokens, passwords, session ids)
     sanitized = get_url_param_regex()
-        .replace_all(&sanitized, "${1}[REDACTED]")
+        .replace_all(&sanitized, |caps: &regex::Captures<'_>| {
+            if is_sensitive_url_key(&caps[2]) {
+                format!("{}{}=[REDACTED]", &caps[1], &caps[2])
+            } else {
+                caps[0].to_string()
+            }
+        })
+        .to_string();
+
+    // A URL fragment or query may itself be percent-encoded (for example
+    // `#access_token%3D...`).  Keep the original encoding while replacing
+    // only a recognized sensitive value.
+    sanitized = get_encoded_url_param_regex()
+        .replace_all(&sanitized, |caps: &regex::Captures<'_>| {
+            if is_sensitive_url_key(&caps[2]) {
+                format!("{}{}%3D[REDACTED]", &caps[1], &caps[2])
+            } else {
+                caps[0].to_string()
+            }
+        })
         .to_string();
 
     // 2. Redact Bearer authorization headers/tokens
@@ -97,5 +150,31 @@ mod tests {
         let raw = "联系邮箱 test@example.com";
         let cleaned = sanitize_prompt_for_ai(raw, true);
         assert_eq!(cleaned, raw);
+    }
+
+    #[test]
+    fn test_sanitize_cloud_sensitive_url_parameters() {
+        let raw = "https://example.test/callback?refresh_token=refresh-secret&client_secret=client-secret&jwt=jwt-secret&sid=session-secret&next=/docs";
+        let cleaned = sanitize_prompt_for_ai(raw, false);
+
+        for secret in [
+            "refresh-secret",
+            "client-secret",
+            "jwt-secret",
+            "session-secret",
+        ] {
+            assert!(!cleaned.contains(secret), "secret leaked: {secret}");
+        }
+        assert!(cleaned.contains("next=/docs"));
+    }
+
+    #[test]
+    fn test_sanitize_encoded_query_and_fragment_keys() {
+        let raw = "https://example.test/callback?%72efresh_token=encoded-query#access_token%3Dencoded-fragment&next=%2Fdocs";
+        let cleaned = sanitize_prompt_for_ai(raw, false);
+
+        assert!(!cleaned.contains("encoded-query"));
+        assert!(!cleaned.contains("encoded-fragment"));
+        assert!(cleaned.contains("next=%2Fdocs"));
     }
 }

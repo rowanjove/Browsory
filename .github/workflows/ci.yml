@@ -9,9 +9,94 @@ on:
 
 jobs:
   rust:
-    uses: rowanjove/.github/.github/workflows/rust-ci.yml@main
-    with:
-      working-directory: src-tauri
+    name: Rust fmt, clippy and unit/integration tests
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Check formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run Cargo tests
+        working-directory: src-tauri
+        run: cargo test --locked --all-targets -- --test-threads=2
 
   node:
-    uses: rowanjove/.github/.github/workflows/node-ci.yml@main
+    name: Frontend build and behavior tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.13.0'
+      - uses: pnpm/action-setup@v3
+        with:
+          version: '12.3.4'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
+
+  security-package:
+    name: Windows SQLCipher package acceptance
+    runs-on: windows-2022
+    needs: [rust, node]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with:
+          version: '12.3.4'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.13.0'
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+      - name: Build and exercise actual linked SQLCipher in a new fixture directory
+        working-directory: src-tauri
+        env:
+          STATIC_VCRUNTIME: 'true'
+        run: cargo run --locked --release --example vault_performance -- 1000 '${{ runner.temp }}/browsory-security-fixture'
+      - name: Verify rejection by an independent ordinary SQLite engine
+        run: python scripts/verify-ordinary-sqlite.py '${{ runner.temp }}/browsory-security-fixture' encrypted/archive.db
+      - name: Build Windows current-user installer
+        run: pnpm build:windows
+      - name: Validate final EXE imports, hardening flags and manifest
+        shell: pwsh
+        run: |
+          ./scripts/verify-windows-package.ps1 -Executable ./src-tauri/target/release/browsory.exe -RequireStaticRuntime | Set-Content ./windows-package-validation.json
+          Copy-Item '${{ runner.temp }}/browsory-security-fixture/report.json' ./windows-sqlcipher-workload.json
+          Copy-Item '${{ runner.temp }}/browsory-security-fixture/ordinary-sqlite-report.json' ./windows-ordinary-sqlite-rejection.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-security-acceptance
+          path: |
+            windows-package-validation.json
+            windows-sqlcipher-workload.json
+            windows-ordinary-sqlite-rejection.json
+            src-tauri/target/release/bundle/nsis/*.exe
+            release/security-acceptance/package-*/*.zip
+            release/security-acceptance/package-*/manifest.json

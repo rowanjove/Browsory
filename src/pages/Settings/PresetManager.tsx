@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
 import { X, BookmarkPlus } from 'lucide-react';
+import { credentialRefForEndpoint, DEFAULT_AI_ENDPOINT } from '../../services/aiCredentials';
+import { useAppStore } from '../../stores/useAppStore';
 
 export interface PresetItem {
   id?: string;
   name: string;
   model: string;
   baseUrl: string;
+  /** Endpoint-bound OS credential reference, never the credential value. */
+  credentialRef?: string;
+  /** Legacy field accepted only for one-time migration; never written by this UI. */
   apiKey?: string;
 }
 
@@ -17,45 +22,69 @@ interface PresetManagerProps {
   onDelete: (index: number) => void;
   currentModel: string;
   currentBaseUrl: string;
-  currentApiKey?: string;
+  credentialScope?: 'chat' | 'embedding';
   maxCount?: number;
 }
 
 export const PresetManager: React.FC<PresetManagerProps> = ({
-  label = '快捷预设:',
+  label,
   presets,
   onApply,
   onAdd,
   onDelete,
   currentModel,
   currentBaseUrl,
-  currentApiKey,
+  credentialScope = label && (label.includes('向量') || label.toLowerCase().includes('embedding')) ? 'embedding' : 'chat',
   maxCount = 3,
 }) => {
+  const { language, t } = useAppStore();
+  const ui = (zh: string, en: string) => (language === 'en-US' ? en : zh);
+  const resolvedLabel = label || ui('快捷预设:', 'Presets:');
+
   const [isAdding, setIsAdding] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [nameInput, setNameInput] = useState('');
 
   const handleStartAdd = () => {
-    setNameInput(currentModel.trim() || '自定义预设');
+    setNameInput(currentModel.trim() || ui('自定义预设', 'Custom preset'));
     setIsAdding(true);
   };
 
-  const handleConfirmAdd = () => {
-    const finalName = nameInput.trim() || currentModel.trim() || '自定义预设';
-    onAdd({
-      name: finalName,
-      model: currentModel.trim(),
-      baseUrl: currentBaseUrl.trim(),
-      apiKey: currentApiKey ? currentApiKey.trim() : undefined,
-    });
-    setIsAdding(false);
-    setNameInput('');
+  const sanitizeForApply = async (preset: PresetItem): Promise<PresetItem> => {
+    const endpoint = preset.baseUrl.trim() || DEFAULT_AI_ENDPOINT;
+    const expectedCredentialRef = await credentialRefForEndpoint(endpoint, credentialScope);
+    return {
+      id: preset.id,
+      name: preset.name,
+      model: preset.model,
+      baseUrl: endpoint,
+      credentialRef: expectedCredentialRef,
+    };
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleConfirmAdd = async () => {
+    setIsSaving(true);
+    const finalName = nameInput.trim() || currentModel.trim() || ui('自定义预设', 'Custom preset');
+    try {
+      const endpoint = currentBaseUrl.trim() || DEFAULT_AI_ENDPOINT;
+      const credentialRef = await credentialRefForEndpoint(endpoint, credentialScope);
+      await onAdd({
+        name: finalName,
+        model: currentModel.trim(),
+        baseUrl: endpoint,
+        credentialRef,
+      });
+      setIsAdding(false);
+      setNameInput('');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleKeyDown = async (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      handleConfirmAdd();
+      await handleConfirmAdd();
     } else if (e.key === 'Escape') {
       setIsAdding(false);
     }
@@ -63,7 +92,7 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
 
   return (
     <div className="flex flex-wrap items-center gap-2 py-0.5">
-      <span className="text-slate-500 text-[11px] font-medium shrink-0">{label}</span>
+      <span className="text-slate-500 text-xs font-medium shrink-0">{resolvedLabel}</span>
 
       {/* Preset Badges */}
       {presets.map((p, idx) => (
@@ -73,9 +102,12 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
         >
           <button
             type="button"
-            onClick={() => onApply(p)}
-            className="text-[11px] text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 font-mono font-medium truncate max-w-[140px] cursor-pointer"
-            title={`点击应用预设\n模型: ${p.model}\n端点: ${p.baseUrl}`}
+            onClick={async () => onApply(await sanitizeForApply(p))}
+            className="text-xs text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 font-mono font-medium truncate max-w-[160px] cursor-pointer"
+            title={ui(
+              `点击应用预设\n模型: ${p.model}\n端点: ${p.baseUrl}`,
+              `Apply preset\nModel: ${p.model}\nEndpoint: ${p.baseUrl}`
+            )}
           >
             {p.name}
           </button>
@@ -85,8 +117,9 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
               e.stopPropagation();
               onDelete(idx);
             }}
+            aria-label={ui(`删除预设 ${p.name}`, `Delete preset ${p.name}`)}
             className="p-0.5 rounded text-slate-400 hover:text-rose-500 hover:bg-slate-200 dark:hover:bg-slate-600 transition cursor-pointer"
-            title="删除此预设"
+            title={ui('删除此预设', 'Delete preset')}
           >
             <X className="w-3 h-3" />
           </button>
@@ -95,8 +128,8 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
 
       {/* Empty State */}
       {presets.length === 0 && !isAdding && (
-        <span className="text-slate-400 dark:text-slate-500 text-[11px]">
-          暂无预设 (上限 {maxCount} 个)
+        <span className="text-slate-400 dark:text-slate-500 text-xs">
+          {ui(`暂无预设 (上限 ${maxCount} 个)`, `No presets (max ${maxCount})`)}
         </span>
       )}
 
@@ -108,23 +141,24 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
             value={nameInput}
             onChange={(e) => setNameInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="预设名称"
+            placeholder={ui('预设名称', 'Preset name')}
             autoFocus
-            className="px-1.5 py-0.5 text-[11px] font-mono rounded bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 focus:outline-none w-32"
+            className="px-1.5 py-0.5 text-xs font-mono rounded bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 focus:outline-none w-36"
           />
           <button
             type="button"
             onClick={handleConfirmAdd}
-            className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-medium transition cursor-pointer"
+            disabled={isSaving}
+            className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium transition cursor-pointer"
           >
-            保存
+            {ui('保存', 'Save')}
           </button>
           <button
             type="button"
             onClick={() => setIsAdding(false)}
-            className="px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-[11px] transition cursor-pointer"
+            className="px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs transition cursor-pointer"
           >
-            取消
+            {t('export.cancel')}
           </button>
         </div>
       ) : (
@@ -132,11 +166,11 @@ export const PresetManager: React.FC<PresetManagerProps> = ({
           <button
             type="button"
             onClick={handleStartAdd}
-            className="flex items-center gap-1 px-2 py-1 rounded border border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-400 dark:hover:border-blue-500 hover:bg-blue-50/50 dark:hover:bg-blue-950/30 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 text-[11px] transition cursor-pointer"
-            title="将当前已输入的配置保存为新预设"
+            className="flex items-center gap-1 px-2 py-1 rounded border border-dashed border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-blue-500 hover:text-blue-600 dark:hover:text-blue-400 text-xs transition cursor-pointer"
+            title={ui('将当前模型、端点与 API Key 存为快捷预设', 'Save current endpoint and model as preset')}
           >
             <BookmarkPlus className="w-3 h-3" />
-            <span>保存当前为预设 ({presets.length}/{maxCount})</span>
+            <span>{ui('存为预设', 'Save preset')}</span>
           </button>
         )
       )}

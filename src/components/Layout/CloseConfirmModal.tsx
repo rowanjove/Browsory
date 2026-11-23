@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Minus, Power } from 'lucide-react';
+import { Power } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { tauriApi } from '../../services/tauri';
 import { useAppStore } from '../../stores/useAppStore';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
 
 interface CloseConfirmModalProps {
   isOpen: boolean;
@@ -10,9 +11,10 @@ interface CloseConfirmModalProps {
 }
 
 export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({ isOpen, onClose }) => {
-  const { showToast } = useAppStore();
+  const { showToast, t } = useAppStore();
   const [remember, setRemember] = useState(false);
   const [busy, setBusy] = useState(false);
+  const dialogRef = useDialogFocus<HTMLDivElement>({ isOpen, onClose });
 
   if (!isOpen) return null;
 
@@ -21,7 +23,7 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({ isOpen, on
     try {
       await tauriApi.setSetting('close_behavior', value);
     } catch (err) {
-      showToast(typeof err === 'string' ? err : '无法保存关闭行为', 'error');
+      showToast(typeof err === 'string' ? err : t('dialogs.saveBehaviorFailed'), 'error');
     }
   };
 
@@ -32,7 +34,7 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({ isOpen, on
       await getCurrentWindow().hide();
       onClose();
     } catch (err) {
-      showToast(typeof err === 'string' ? err : '无法最小化到托盘', 'error');
+      showToast(typeof err === 'string' ? err : t('dialogs.minimizeFailed'), 'error');
     } finally {
       setBusy(false);
     }
@@ -44,18 +46,18 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({ isOpen, on
     try {
       await tauriApi.quitApplication();
     } catch (err) {
-      showToast(typeof err === 'string' ? err : '无法退出应用', 'error');
+      showToast(typeof err === 'string' ? err : t('dialogs.quitFailed'), 'error');
       setBusy(false);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 backdrop-blur-sm p-4">
-      <div className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-5 space-y-4">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="close-confirm-title" tabIndex={-1} className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-5 space-y-4">
         <div>
-          <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">关闭 Browsory</h3>
+          <h3 id="close-confirm-title" className="text-sm font-bold text-slate-900 dark:text-slate-100">{t('dialogs.closeTitle')}</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-            点窗口关闭默认不会退出。后台仍会监视浏览器历史。请选择本次操作：
+            {t('dialogs.closeDescription')}
           </p>
         </div>
 
@@ -66,7 +68,7 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({ isOpen, on
             onChange={(e) => setRemember(e.target.checked)}
             className="rounded border-slate-300"
           />
-          记住我的选择
+          {t('dialogs.remember')}
         </label>
 
         <div className="flex justify-end gap-2">
@@ -76,16 +78,15 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({ isOpen, on
             onClick={onClose}
             className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300"
           >
-            取消
+            {t('export.cancel')}
           </button>
           <button
             type="button"
             disabled={busy}
             onClick={handleTray}
-            className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-200 flex items-center gap-1.5"
+            className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
-            <Minus className="w-3.5 h-3.5" />
-            最小化到托盘
+            {t('dialogs.minimize')}
           </button>
           <button
             type="button"
@@ -94,7 +95,7 @@ export const CloseConfirmModal: React.FC<CloseConfirmModalProps> = ({ isOpen, on
             className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs flex items-center gap-1.5"
           >
             <Power className="w-3.5 h-3.5" />
-            退出
+            {t('dialogs.quit')}
           </button>
         </div>
       </div>

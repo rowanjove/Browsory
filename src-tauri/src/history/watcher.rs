@@ -5,7 +5,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tauri::Emitter;
+use tracing::{info, warn};
+
+static APP_EVENTS: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub fn set_app_events(app: tauri::AppHandle) {
+    let _ = APP_EVENTS.set(app);
+}
+
+pub fn emit_app_event(event: &str) {
+    if let Some(app) = APP_EVENTS.get() {
+        let _ = app.emit(event, ());
+    }
+}
 
 use std::sync::{Mutex, OnceLock};
 
@@ -31,6 +44,21 @@ pub fn unwatch_history_directory(dir: &Path) {
     }
 }
 
+pub fn refresh_active_directories(db_state: &DbState) {
+    if let Some(w) = GLOBAL_WATCHER.get() {
+        let watched_dirs = get_active_history_directories(db_state);
+        for dir in &watched_dirs {
+            if dir.exists() {
+                let _ = w.watch_directory(dir);
+            }
+        }
+        info!(
+            "History Watcher 已更新动态监听目录，共注册 {} 个活动源目录",
+            watched_dirs.len()
+        );
+    }
+}
+
 impl HistoryWatcher {
     pub fn watch_directory(&self, dir: &Path) -> Result<(), String> {
         if dir.exists() {
@@ -50,8 +78,6 @@ impl HistoryWatcher {
         Ok(())
     }
 }
-
-static IS_AUTO_SYNCING: AtomicBool = AtomicBool::new(false);
 
 /// Starts the intelligent background watcher:
 /// 1. Watches the parent directories of active browser History files
@@ -120,7 +146,12 @@ pub fn start_history_watcher(db_state: DbState) -> Result<Arc<HistoryWatcher>, S
             }
 
             info!("Triggering 30-min periodic fallback archive sync...");
-            trigger_silent_sync(&periodic_state);
+            if crate::auto_sync::runner::check_due_during_tray(&periodic_state) {
+                emit_app_event("browsory://auto-sync-updated");
+                emit_app_event("browsory://sync-status");
+            } else {
+                trigger_silent_sync(&periodic_state);
+            }
         }
     });
 
@@ -135,84 +166,52 @@ pub fn start_history_watcher(db_state: DbState) -> Result<Arc<HistoryWatcher>, S
 }
 
 fn trigger_silent_sync(db_state: &DbState) {
-    if IS_AUTO_SYNCING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        // A sync is already in progress, ignore duplicate trigger
+    if !db_state.vault.is_unlocked() {
+        return;
+    }
+
+    if crate::history::coordinator::global_sync_coordinator().is_running() {
         return;
     }
 
     let state = db_state.clone();
+    let operation = match state.begin_operation() {
+        Ok(operation) => operation,
+        Err(_) => {
+            return;
+        }
+    };
     thread::spawn(move || {
-        let sources = {
-            let conn = state.conn.lock().unwrap();
-            list_sources(&conn).unwrap_or_default()
+        let Some(_lease) = crate::history::coordinator::global_sync_coordinator()
+            .try_acquire(crate::database::models::SyncTriggerType::Watcher)
+        else {
+            return;
         };
-
-        let active_sources: Vec<_> = sources.into_iter().filter(|s| s.enabled).collect();
-        let mut total_inserted = 0;
-
-        for source in active_sources {
-            let history_path = PathBuf::from(&source.history_path);
-            if !history_path.exists() {
-                continue;
-            }
-
-            // 1. Fast incremental check: if file and WAL unchanged since last sync, skip with 0 disk I/O!
-            if !crate::history::sync::is_source_modified_since_last_sync(
-                &history_path,
-                source.last_sync_at,
-            ) {
-                continue;
-            }
-
-            let start_time = std::time::Instant::now();
-
-            // 2. Prepare snapshot & parse records WITHOUT holding the database lock
-            let prepared = match crate::history::sync::prepare_source_records(
-                source.id,
-                &source.browser,
-                &history_path,
-                source.last_visit_time,
-                source.db_fingerprint.as_deref(),
-                &state.temp_dir,
-            ) {
-                Ok(data) => data,
-                Err(e) => {
-                    error!(
-                        "Auto-sync preparation failed for source #{}: {} [{}]: {}",
-                        source.id, source.browser, source.profile, e
-                    );
-                    continue;
+        let results = match crate::history::batch_sync::sync_all_registered_with_options(
+            &state, &operation, "watcher", None, 1,
+        ) {
+            Ok(results) => results,
+            Err(error) => {
+                if operation.check().is_ok() {
+                    tracing::warn!("Background sync did not complete: {}", error);
                 }
-            };
-
-            // 3. Commit records to archive.db holding lock ONLY during this brief transaction
-            let commit_res = {
-                let mut conn = state.conn.lock().unwrap();
-                crate::history::sync::commit_source_records(
-                    &mut conn,
-                    source.id,
-                    &source.browser,
-                    &source.profile,
-                    source.last_visit_time,
-                    prepared,
-                    start_time,
-                )
-            };
-
-            match commit_res {
-                Ok(res) => {
-                    total_inserted += res.inserted_count;
-                }
-                Err(e) => {
-                    error!(
-                        "Auto-sync commit failed for source #{}: {} [{}]: {}",
-                        source.id, source.browser, source.profile, e
-                    );
-                }
+                return;
             }
+        };
+        let total_inserted: u32 = results.iter().map(|r| r.inserted_count).sum();
+        if let Some(app) = APP_EVENTS.get() {
+            // Only notify; the frontend re-queries through its current protected IPC session.
+            let _ = app.emit("browsory://sync-status", ());
+        }
+        let failed = results
+            .iter()
+            .filter(|r| r.status == crate::database::models::SourceSyncStatus::Failed)
+            .count();
+        if failed > 0 {
+            tracing::warn!(
+                failed_sources = failed,
+                "Background sync has source failures; see Sync Center"
+            );
         }
 
         if total_inserted > 0 {
@@ -221,17 +220,14 @@ fn trigger_silent_sync(db_state: &DbState) {
                 total_inserted
             );
         }
-
-        IS_AUTO_SYNCING.store(false, Ordering::SeqCst);
     });
 }
 
 fn get_active_history_directories(db_state: &DbState) -> HashSet<PathBuf> {
     let mut dirs = HashSet::new();
-    let sources = {
-        let conn = db_state.conn.lock().unwrap();
-        list_sources(&conn).unwrap_or_default()
-    };
+    let sources = db_state
+        .with_conn(|conn| Ok(list_sources(conn).unwrap_or_default()))
+        .unwrap_or_default();
 
     for s in sources {
         if s.enabled {

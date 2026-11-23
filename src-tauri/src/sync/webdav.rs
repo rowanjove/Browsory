@@ -5,6 +5,27 @@ use url::Url;
 
 use crate::error::{AppError, AppResult};
 
+const MAX_WEBDAV_DOWNLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+fn validate_test_connection_status(status: StatusCode) -> AppResult<()> {
+    if status == StatusCode::NOT_FOUND {
+        Err(AppError::Other(
+            "WebDAV 路径不存在 (HTTP 404)；服务器可达，但无法确认 DAV 能力或凭据，请检查服务器地址和远端目录".into(),
+        ))
+    } else if status.is_success() || status == StatusCode::MULTI_STATUS {
+        Ok(())
+    } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        Err(AppError::Other(
+            "WebDAV 认证失败，请检查用户名与密码或应用令牌".into(),
+        ))
+    } else {
+        Err(AppError::Other(format!(
+            "WebDAV 服务器响应异常: HTTP {}",
+            status
+        )))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebDavConfig {
     pub enabled: bool,
@@ -68,24 +89,7 @@ impl WebDavClient {
             .await;
 
         match req {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success()
-                    || status == StatusCode::MULTI_STATUS
-                    || status == StatusCode::NOT_FOUND
-                {
-                    Ok(())
-                } else if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                    Err(AppError::Other(
-                        "WebDAV 认证失败，请检查用户名与密码或应用令牌".into(),
-                    ))
-                } else {
-                    Err(AppError::Other(format!(
-                        "WebDAV 服务器响应异常: HTTP {}",
-                        status
-                    )))
-                }
-            }
+            Ok(resp) => validate_test_connection_status(resp.status()),
             Err(err) => Err(AppError::Other(format!(
                 "无法连接到 WebDAV 服务器: {}",
                 err
@@ -163,12 +167,11 @@ impl WebDavClient {
             )));
         }
 
-        let bytes = resp
-            .bytes()
+        let bytes = crate::ai::http::read_response_body_limited(resp, MAX_WEBDAV_DOWNLOAD_BYTES)
             .await
-            .map_err(|e| AppError::Other(format!("读取 WebDAV 响应数据流失败: {}", e)))?;
+            .map_err(AppError::Other)?;
 
-        Ok(Some(bytes.to_vec()))
+        Ok(Some(bytes))
     }
 
     /// 删除文件 (DELETE)
@@ -237,5 +240,15 @@ mod tests {
         assert!(WebDavClient::new(config("http://localhost.evil.example/dav")).is_err());
         assert!(WebDavClient::new(config("https://dav.example.com/dav")).is_ok());
         assert!(WebDavClient::new(config("https://localhost.evil.example/dav")).is_ok());
+    }
+
+    #[test]
+    fn missing_path_does_not_confirm_authentication() {
+        assert!(validate_test_connection_status(StatusCode::MULTI_STATUS).is_ok());
+        assert!(validate_test_connection_status(StatusCode::OK).is_ok());
+        let error = validate_test_connection_status(StatusCode::NOT_FOUND).unwrap_err();
+        assert!(error.to_string().contains("HTTP 404"));
+        assert!(validate_test_connection_status(StatusCode::UNAUTHORIZED).is_err());
+        assert!(validate_test_connection_status(StatusCode::METHOD_NOT_ALLOWED).is_err());
     }
 }
