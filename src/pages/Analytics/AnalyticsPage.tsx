@@ -262,7 +262,7 @@ export const AnalyticsPage: React.FC = () => {
             </div>
           </div>
           <p className="text-slate-500">
-            Local-First 本地隐私安全聚合 · 当前区间归档 {data?.total_visits.toLocaleString() ?? '...'} 次访问
+            纯本地隐私安全聚合 · 当前区间归档 {data?.total_visits.toLocaleString() ?? '...'} 次访问
           </p>
         </div>
 

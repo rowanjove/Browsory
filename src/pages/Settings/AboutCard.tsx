@@ -23,7 +23,7 @@ export const AboutCard: React.FC = () => {
               </span>
             </div>
             <span className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-              本地优先的多浏览器历史记录归档与智能分析工具
+              纯本地运行的多浏览器历史记录归档与智能分析工具
             </span>
           </div>
         </div>

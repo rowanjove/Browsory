@@ -4,7 +4,7 @@
 
 # Browsory
 
-**Local-first multi-browser history archive, instant search, and analytics desktop application**
+**Offline-ready multi-browser history archive, instant search, and analytics desktop application**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Release](https://img.shields.io/github/v/release/rowanjove/browsory?include_prereleases)](https://github.com/rowanjove/browsory/releases)
@@ -21,13 +21,13 @@
 
 When using multiple web browsers (Chrome, Edge, Brave, etc.), browsing history is fragmented across different profile directories. Built-in history viewers are often slow to search through large datasets, lack unified aggregation, and offer limited analytics.
 
-**Browsory** solves this by providing a unified, local-first archive. It automatically discovers multi-browser profiles, enables millisecond-level full-text search, delivers visual browsing analytics, secures your data with a PIN lock, and optionally connects to local or private LLMs for intelligent history recall.
+**Browsory** solves this by providing a unified, fully local archive. It automatically discovers multi-browser profiles, enables millisecond-level full-text search, delivers visual browsing analytics, secures your data with a PIN lock, and optionally connects to local or private LLMs for intelligent history recall.
 
 ---
 
 ## ✨ Key Features
 
-- **🔒 Local-First, Complete Privacy**
+- **🔒 Strictly Local, Complete Privacy**
   All historical data remains entirely in a local SQLite database on your machine. No telemetry, no cloud servers, and no background tracking.
 - **🌐 Multi-Browser Auto-Discovery & Snapshot Aggregation**
   Automatically detects Chromium-based browsers (Chrome, Edge, Brave, Vivaldi, etc.) across multiple user profiles. Reads data via read-only temporary snapshots to avoid database locks while browsers are running.

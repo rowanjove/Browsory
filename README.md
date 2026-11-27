@@ -4,7 +4,7 @@
 
 # Browsory 浏览足迹
 
-**本地优先的多浏览器历史记录归档、智能检索与数据分析桌面应用**
+**纯本地运行的多浏览器历史记录归档、智能检索与数据分析桌面应用**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 [![Release](https://img.shields.io/github/v/release/rowanjove/browsory?include_prereleases)](https://github.com/rowanjove/browsory/releases)
@@ -27,7 +27,7 @@
 
 ## ✨ 核心特性
 
-- **🔒 本地优先，隐私完全自控**
+- **🔒 数据只留本地，隐私完全自控**
   所有历史数据全生命周期存储在您本机的 SQLite 数据库中。没有云端服务器，没有静默收集，不上传任何历史记录或分析数据。
 - **🌐 多浏览器自动发现与快照聚合**
   自动识别系统安装的 Chromium 内核浏览器（Chrome、Edge、Brave、Vivaldi 等）及其多个 Profile，采用只读临时快照复制机制读取，在浏览器运行时也能平稳同步，绝无数据库死锁问题。

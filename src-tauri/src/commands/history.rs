@@ -193,7 +193,7 @@ pub async fn ask_web_memory(
     }
     let context_text = context_lines.join("\n");
 
-    let system_prompt = "你是一个专业严谨的 Local-First 个人 Web 记忆助手。用户正在查询其个人的网页浏览历史记录。\n\
+    let system_prompt = "你是一个专业严谨的本地个人 Web 记忆助手。用户正在查询其个人的网页浏览历史记录。\n\
         请结合提供的历史访问上下文直接回答用户的问题。\n\
         回答要求：\n\
         1. 必须基于提供的真实历史记录，客观总结与回答，不要编造未出现过的事实；\n\
