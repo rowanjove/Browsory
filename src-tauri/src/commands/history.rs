@@ -7,8 +7,9 @@ use crate::database::models::{
 };
 use crate::database::repository::{
     create_smart_collection as repo_create_smart_collection,
-    delete_smart_collection as repo_delete_smart_collection, delete_visits as repo_delete_visits,
-    get_analytics_summary as repo_get_analytics_summary,
+    delete_smart_collection as repo_delete_smart_collection,
+    delete_visits_checked as repo_delete_visits,
+    get_analytics_summary_with_options as repo_get_analytics_summary_with_options,
     get_domain_detail as repo_get_domain_detail, get_domain_dynamics as repo_get_domain_dynamics,
     get_on_this_day as repo_get_on_this_day, get_research_sessions as repo_get_research_sessions,
     get_research_sessions_for_ai as repo_get_research_sessions_for_ai,
@@ -19,145 +20,308 @@ use crate::database::DbState;
 use crate::error::AppResult;
 
 #[tauri::command]
-pub fn get_history_page(
+pub async fn get_history_page(
     filter: HistoryFilter,
     db: State<'_, DbState>,
 ) -> AppResult<HistoryPageResult> {
-    let conn = db.conn.lock().unwrap();
-    query_history(&conn, &filter)
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result = operation.with_read_conn(|conn| query_history(conn, &filter));
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn get_visit_detail(visit_id: i64, db: State<'_, DbState>) -> AppResult<Option<VisitDetail>> {
-    let conn = db.conn.lock().unwrap();
-    repo_get_visit_detail(&conn, visit_id)
+pub async fn get_visit_detail(
+    visit_id: i64,
+    db: State<'_, DbState>,
+) -> AppResult<Option<VisitDetail>> {
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result = operation.with_read_conn(|conn| repo_get_visit_detail(conn, visit_id));
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn delete_visits(visit_ids: Vec<i64>, db: State<'_, DbState>) -> AppResult<u32> {
-    let conn = db.conn.lock().unwrap();
-    repo_delete_visits(&conn, &visit_ids)
+pub async fn delete_visits(visit_ids: Vec<i64>, db: State<'_, DbState>) -> AppResult<u32> {
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+
+        let result = (|| {
+            let conn_arc = operation.connection()?;
+            let conn = conn_arc.lock()?;
+            repo_delete_visits(&conn, &visit_ids, || operation.check())
+        })();
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn get_analytics(
+pub async fn get_analytics(
     days: Option<u32>,
     start_time: Option<i64>,
     end_time: Option<i64>,
+    summary_only: Option<bool>,
     db: State<'_, DbState>,
 ) -> AppResult<AnalyticsSummary> {
-    let conn = db.conn.lock().unwrap();
-    repo_get_analytics_summary(&conn, start_time, end_time, days)
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result = operation.with_read_conn(|conn| {
+            repo_get_analytics_summary_with_options(
+                conn,
+                start_time,
+                end_time,
+                days,
+                summary_only.unwrap_or(false),
+            )
+        });
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn export_history(
+pub async fn export_history(
     options: crate::export::ExportOptions,
     db: State<'_, DbState>,
 ) -> AppResult<usize> {
-    let conn = db.conn.lock().unwrap();
-    crate::export::export_history_to_file(&conn, &options)
+    let operation = db.begin_operation()?;
+    let app_dir = db.app_dir.clone();
+    super::blocking::run(move || {
+        operation.check()?;
+        super::export_destination::validate(&app_dir, std::path::Path::new(&options.file_path))?;
+
+        let result = operation.with_read_conn(|conn| {
+            crate::export::export_history_to_file_checked(conn, &options, || operation.check())
+        });
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn toggle_favorite(url_id: i64, db: State<'_, DbState>) -> AppResult<bool> {
-    let conn = db.conn.lock().unwrap();
-    crate::database::repository::toggle_favorite(&conn, url_id)
+pub async fn toggle_favorite(url_id: i64, db: State<'_, DbState>) -> AppResult<bool> {
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+
+        let result = (|| {
+            let conn_arc = operation.connection()?;
+            let conn = conn_arc.lock()?;
+            crate::database::repository::toggle_favorite(&conn, url_id)
+        })();
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn list_tags(db: State<'_, DbState>) -> AppResult<Vec<crate::database::models::TagItem>> {
-    let conn = db.conn.lock().unwrap();
-    crate::database::repository::list_tags(&conn)
+pub async fn list_tags(db: State<'_, DbState>) -> AppResult<Vec<crate::database::models::TagItem>> {
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result = operation.with_read_conn(crate::database::repository::list_tags);
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn add_tag_to_url(url_id: i64, tag_name: String, db: State<'_, DbState>) -> AppResult<()> {
-    let conn = db.conn.lock().unwrap();
-    crate::database::repository::add_tag_to_url(&conn, url_id, &tag_name)
+pub async fn add_tag_to_url(
+    url_id: i64,
+    tag_name: String,
+    db: State<'_, DbState>,
+) -> AppResult<()> {
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+
+        let result = (|| {
+            let conn_arc = operation.connection()?;
+            let conn = conn_arc.lock()?;
+            crate::database::repository::add_tag_to_url(&conn, url_id, &tag_name)
+        })();
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn remove_tag_from_url(url_id: i64, tag_name: String, db: State<'_, DbState>) -> AppResult<()> {
-    let conn = db.conn.lock().unwrap();
-    crate::database::repository::remove_tag_from_url(&conn, url_id, &tag_name)
+pub async fn remove_tag_from_url(
+    url_id: i64,
+    tag_name: String,
+    db: State<'_, DbState>,
+) -> AppResult<()> {
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+
+        let result = (|| {
+            let conn_arc = operation.connection()?;
+            let conn = conn_arc.lock()?;
+            crate::database::repository::remove_tag_from_url(&conn, url_id, &tag_name)
+        })();
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn get_research_sessions(
+pub async fn get_research_sessions(
     days: Option<u32>,
     limit: Option<u32>,
     db: State<'_, DbState>,
 ) -> AppResult<Vec<ResearchSession>> {
-    let conn = db.conn.lock().unwrap();
-    repo_get_research_sessions(&conn, days, limit.unwrap_or(50))
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result = operation.with_read_conn(|conn| {
+            repo_get_research_sessions(conn, days, limit.unwrap_or(50).clamp(1, 500))
+        });
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn get_website_ranking(
+pub async fn get_website_ranking(
     start_time: Option<i64>,
     end_time: Option<i64>,
     limit: Option<u32>,
     db: State<'_, DbState>,
 ) -> AppResult<Vec<WebsiteRankingItem>> {
-    let conn = db.conn.lock().unwrap();
-    repo_get_website_ranking(&conn, start_time, end_time, limit)
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result = operation
+            .with_read_conn(|conn| repo_get_website_ranking(conn, start_time, end_time, limit));
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn get_domain_detail(
+pub async fn get_domain_detail(
     domain: String,
     start_time: Option<i64>,
     end_time: Option<i64>,
     db: State<'_, DbState>,
 ) -> AppResult<DomainDetail> {
-    let conn = db.conn.lock().unwrap();
-    repo_get_domain_detail(&conn, &domain, start_time, end_time)
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result = operation
+            .with_read_conn(|conn| repo_get_domain_detail(conn, &domain, start_time, end_time));
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn get_domain_dynamics(
+pub async fn get_domain_dynamics(
     start_time: Option<i64>,
     end_time: Option<i64>,
     db: State<'_, DbState>,
 ) -> AppResult<DomainDynamics> {
-    let conn = db.conn.lock().unwrap();
-    repo_get_domain_dynamics(&conn, start_time, end_time)
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result =
+            operation.with_read_conn(|conn| repo_get_domain_dynamics(conn, start_time, end_time));
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn get_on_this_day(
+pub async fn get_on_this_day(
     target_date: Option<String>,
     year: Option<i32>,
     page: Option<u32>,
     page_size: Option<u32>,
     db: State<'_, DbState>,
 ) -> AppResult<OnThisDayResult> {
-    let conn = db.conn.lock().unwrap();
-    repo_get_on_this_day(&conn, target_date, year, page, page_size)
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result = operation
+            .with_read_conn(|conn| repo_get_on_this_day(conn, target_date, year, page, page_size));
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn list_smart_collections(db: State<'_, DbState>) -> AppResult<Vec<SmartCollection>> {
-    let conn = db.conn.lock().unwrap();
-    repo_list_smart_collections(&conn)
+pub async fn list_smart_collections(db: State<'_, DbState>) -> AppResult<Vec<SmartCollection>> {
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+        let result = operation.with_read_conn(repo_list_smart_collections);
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn create_smart_collection(
+pub async fn create_smart_collection(
     name: String,
     query: String,
     filter_json: Option<String>,
     db: State<'_, DbState>,
 ) -> AppResult<SmartCollection> {
-    let conn = db.conn.lock().unwrap();
-    repo_create_smart_collection(&conn, &name, &query, filter_json.as_deref())
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+
+        let result = (|| {
+            let conn_arc = operation.connection()?;
+            let conn = conn_arc.lock()?;
+            repo_create_smart_collection(&conn, &name, &query, filter_json.as_deref())
+        })();
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-pub fn delete_smart_collection(id: i64, db: State<'_, DbState>) -> AppResult<()> {
-    let conn = db.conn.lock().unwrap();
-    repo_delete_smart_collection(&conn, id)
+pub async fn delete_smart_collection(id: i64, db: State<'_, DbState>) -> AppResult<()> {
+    let operation = db.begin_operation()?;
+    super::blocking::run(move || {
+        operation.check()?;
+
+        let result = (|| {
+            let conn_arc = operation.connection()?;
+            let conn = conn_arc.lock()?;
+            repo_delete_smart_collection(&conn, id)
+        })();
+        operation.check()?;
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -165,10 +329,13 @@ pub async fn ask_web_memory(
     question: String,
     db: State<'_, DbState>,
 ) -> Result<WebMemoryAnswer, String> {
-    let citations = {
-        let conn = db.conn.lock().unwrap();
-        query_history_for_ai(&conn, &question, 20).map_err(|e| e.to_string())?
-    };
+    let operation = db.begin_operation().map_err(|e| e.to_string())?;
+    operation.run(async {
+
+    let query = question.clone();
+    let citations = super::blocking::with_operation(&operation, move |operation| {
+        operation.with_read_conn(|conn| query_history_for_ai(conn, &query, 20))
+    }).await.map_err(|e| e.to_string())?;
 
     if citations.is_empty() {
         return Ok(WebMemoryAnswer {
@@ -215,16 +382,18 @@ pub async fn ask_web_memory(
     .await?;
 
     Ok(WebMemoryAnswer { answer, citations })
+
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn get_resume_suggestion(db: State<'_, DbState>) -> Result<ResumeSuggestion, String> {
-    let latest_session = {
-        let conn = db.conn.lock().unwrap();
-        let sessions =
-            repo_get_research_sessions_for_ai(&conn, Some(7), 1).map_err(|e| e.to_string())?;
-        sessions.into_iter().next()
-    };
+    let operation = db.begin_operation().map_err(|e| e.to_string())?;
+    operation.run(async {
+
+    let latest_session = super::blocking::with_operation(&operation, |operation| {
+        operation.with_read_conn(|conn| Ok(repo_get_research_sessions_for_ai(conn, Some(7), 1)?.into_iter().next()))
+    }).await.map_err(|e| e.to_string())?;
 
     let session = match latest_session {
         Some(s) => s,
@@ -270,12 +439,10 @@ pub async fn get_resume_suggestion(db: State<'_, DbState>) -> Result<ResumeSugge
 
     for line in ai_text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('-')
-            || trimmed.starts_with('*')
-            || (trimmed.len() > 2
-                && trimmed.chars().next().unwrap().is_ascii_digit()
-                && trimmed.chars().nth(1) == Some('.'))
-        {
+        let is_numbered = trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+            && trimmed.chars().nth(1) == Some('.');
+
+        if trimmed.starts_with('-') || trimmed.starts_with('*') || is_numbered {
             next_steps.push(
                 trimmed
                     .trim_start_matches(|c: char| {
@@ -311,6 +478,8 @@ pub async fn get_resume_suggestion(db: State<'_, DbState>) -> Result<ResumeSugge
         summary,
         next_steps,
     })
+
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -318,9 +487,27 @@ pub async fn import_takeout_file(
     file_path: String,
     db: State<'_, DbState>,
 ) -> Result<TakeoutImportSummary, String> {
-    let mut conn = db.conn.lock().unwrap();
-    crate::history::takeout::import_google_takeout_file(&mut conn, std::path::Path::new(&file_path))
-        .map_err(|e| e.to_string())
+    let operation = db.begin_operation().map_err(|e| e.to_string())?;
+    super::blocking::run(move || {
+        operation.check().map_err(|e| e.to_string())?;
+        let probe = operation.cancellation_probe();
+        // Parsing owns no live connection, so readers remain available.
+        let prepared = crate::history::takeout::prepare_google_takeout_file_checked(
+            std::path::Path::new(&file_path),
+            probe.clone(),
+        )
+        .map_err(|e| e.to_string())?;
+        operation.check().map_err(|e| e.to_string())?;
+        let conn_arc = operation.connection().map_err(|e| e.to_string())?;
+        let mut conn = conn_arc.lock().map_err(|e| e.to_string())?;
+        let result =
+            crate::history::takeout::commit_google_takeout_file(&mut conn, prepared, probe)
+                .map_err(|e| e.to_string());
+        operation.check().map_err(|e| e.to_string())?;
+        result
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -328,25 +515,32 @@ pub async fn check_link_health(
     url_id: i64,
     db: State<'_, DbState>,
 ) -> Result<LinkHealthStatus, String> {
-    let url: String = {
-        let conn = db.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT url FROM urls WHERE id = ?1",
-            rusqlite::params![url_id],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?
-    };
+    let operation = db.begin_operation().map_err(|e| e.to_string())?;
+    operation
+        .run(async {
+            let url = super::blocking::with_operation(&operation, move |operation| {
+                operation.with_read_conn(|conn| {
+                    conn.query_row(
+                        "SELECT url FROM urls WHERE id = ?1",
+                        rusqlite::params![url_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(Into::into)
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())?;
 
-    let (status_code, is_alive, error_message) =
-        crate::history::health::probe_url_status(&url).await;
-    let now = chrono::Utc::now().timestamp_millis();
-    let wayback_url = crate::history::health::build_wayback_url(&url);
+            let (status_code, is_alive, error_message) =
+                crate::history::health::probe_url_status_for_operation(&url, &operation).await;
+            let now = chrono::Utc::now().timestamp_millis();
+            let wayback_url = crate::history::health::build_wayback_url(&url);
 
-    {
-        let conn = db.conn.lock().unwrap();
-        conn.execute(
-            r#"
+            let write_error = error_message.clone();
+            super::blocking::with_operation(&operation, move |operation| {
+                operation.with_conn(|conn| {
+                    conn.execute(
+                        r#"
             INSERT INTO link_health (url_id, status_code, is_alive, last_checked_at, error_message)
             VALUES (?1, ?2, ?3, ?4, ?5)
             ON CONFLICT(url_id) DO UPDATE SET
@@ -355,33 +549,48 @@ pub async fn check_link_health(
                 last_checked_at = excluded.last_checked_at,
                 error_message = excluded.error_message
             "#,
-            rusqlite::params![
-                url_id,
-                status_code.map(|c| c as i64),
-                if is_alive { 1 } else { 0 },
-                now,
-                error_message
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-    }
+                        rusqlite::params![
+                            url_id,
+                            status_code.map(|c| c as i64),
+                            if is_alive { 1 } else { 0 },
+                            now,
+                            write_error
+                        ],
+                    )
+                    .map_err(Into::into)
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())?;
 
-    Ok(LinkHealthStatus {
-        url_id,
-        url,
-        status_code,
-        is_alive,
-        last_checked_at: now,
-        error_message,
-        wayback_url,
-    })
+            Ok(LinkHealthStatus {
+                url_id,
+                url,
+                status_code,
+                is_alive,
+                last_checked_at: now,
+                error_message,
+                wayback_url,
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn get_link_health(
+pub async fn get_link_health(
     url_id: i64,
     db: State<'_, DbState>,
 ) -> Result<Option<LinkHealthStatus>, String> {
-    let conn = db.conn.lock().unwrap();
-    crate::history::health::get_url_health(&conn, url_id).map_err(|e| e.to_string())
+    let operation = db.begin_operation().map_err(|e| e.to_string())?;
+    super::blocking::run(move || {
+        operation.check().map_err(|error| error.to_string())?;
+        let result = operation
+            .with_read_conn(|conn| crate::history::health::get_url_health(conn, url_id))
+            .map_err(|e| e.to_string());
+        operation.check().map_err(|e| e.to_string())?;
+        result
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }

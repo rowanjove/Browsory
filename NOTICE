@@ -1,0 +1,16 @@
+Browsory
+Copyright Browsory contributors
+
+This product includes OpenSSL 3.6.3 headers and static libraries.
+Copyright The OpenSSL Project Authors. Licensed under Apache License 2.0.
+In the source tree, the license text is at src-tauri/openssl/LICENSE.txt. Windows packages include OpenSSL-LICENSE.txt beside this NOTICE.
+Project information: https://www.openssl.org/
+
+This product includes SQLCipher 4.20.0 and SQLite 3.54.1 through the
+sqlcipher-src and rusqlite crates. The source tree keeps their notices and
+license texts in docs/licenses/sqlcipher-src/ and docs/THIRD_PARTY_NOTICES.md.
+Windows packages include those license texts and THIRD_PARTY_NOTICES.md beside this NOTICE.
+
+This product includes the webpki-roots 1.0.12 root certificate dataset under
+CDLA-Permissive-2.0. The source tree license is at
+docs/licenses/webpki-roots/LICENSE; Windows packages include webpki-roots-LICENSE.txt.

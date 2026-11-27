@@ -71,11 +71,14 @@ pub struct HistoryFilter {
     pub end_time: Option<i64>,
     pub cursor_time: Option<i64>,
     pub cursor_id: Option<i64>,
+    pub cursor_sort_value: Option<i64>,
     pub limit: Option<u32>,
     pub only_favorites: Option<bool>,
     pub tag: Option<String>,
     pub sort_by: Option<String>,
     pub offset: Option<u32>,
+    #[serde(default)]
+    pub ai_scope: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +94,17 @@ pub struct HistoryPageResult {
     pub items: Vec<VisitListItem>,
     pub next_cursor_time: Option<i64>,
     pub next_cursor_id: Option<i64>,
+    pub next_cursor_sort_value: Option<i64>,
     pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceSyncStatus {
+    #[default]
+    Success,
+    Skipped,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +117,10 @@ pub struct SyncResult {
     pub duplicate_count: u32,
     pub failed_count: u32,
     pub duration_ms: u64,
+    #[serde(default)]
+    pub status: SourceSyncStatus,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +223,10 @@ pub struct SecurityState {
     pub auto_lock_minutes: i64,
     pub lock_on_minimize: bool,
     pub lock_on_sleep: bool,
+    #[serde(default)]
+    pub native_sleep_lock_supported: bool,
+    #[serde(default)]
+    pub pin_migration_needed: bool,
     pub is_locked_out: bool,
     pub lockout_remaining_secs: i64,
 }
@@ -442,6 +463,10 @@ pub struct TakeoutImportSummary {
     pub urls_inserted: u64,
     pub visits_inserted: u64,
     pub duplicates_skipped: u64,
+    #[serde(default)]
+    pub invalid_records_skipped: u64,
+    #[serde(default)]
+    pub unknown_time_records: u64,
     pub duration_ms: u64,
 }
 
@@ -454,4 +479,100 @@ pub struct LinkHealthStatus {
     pub last_checked_at: i64,
     pub error_message: Option<String>,
     pub wayback_url: String,
+}
+
+// ==========================================
+// Auto History Sync (Scheduled Incremental)
+// ==========================================
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncTriggerType {
+    Scheduled,
+    Startup,
+    Manual,
+    TrayDue,
+    Watcher,
+}
+
+impl SyncTriggerType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Scheduled => "scheduled",
+            Self::Startup => "startup",
+            Self::Manual => "manual",
+            Self::TrayDue => "tray_due",
+            Self::Watcher => "watcher",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedulerHealthStatus {
+    Registered,
+    Disabled,
+    Missing,
+    OutdatedPath,
+    Unsupported,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoSyncSourceSummary {
+    pub source_id: i64,
+    pub browser: String,
+    pub profile: String,
+    pub status: SourceSyncStatus,
+    pub read_count: u32,
+    pub inserted_count: u32,
+    pub duplicate_count: u32,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoSyncRunItem {
+    pub id: i64,
+    pub run_uuid: String,
+    pub trigger_type: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub status: String,
+    pub sources_total: u32,
+    pub sources_succeeded: u32,
+    pub sources_skipped: u32,
+    pub sources_failed: u32,
+    pub total_read: u32,
+    pub total_inserted: u32,
+    pub total_duplicate: u32,
+    pub duration_ms: u64,
+    pub error_summary: Option<String>,
+    pub details: Vec<AutoSyncSourceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoSyncConfig {
+    pub enabled: bool,
+    pub interval_days: u32,
+    pub last_run_at: Option<i64>,
+    pub last_success_at: Option<i64>,
+    pub next_run_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoSyncStatus {
+    pub enabled: bool,
+    pub interval_days: u32,
+    pub last_run_at: Option<i64>,
+    pub last_success_at: Option<i64>,
+    pub next_run_at: Option<i64>,
+    pub bound_sources_count: u32,
+    pub scheduler_status: SchedulerHealthStatus,
+    pub task_name: String,
+    pub scheduler_error: Option<String>,
+    pub headless_capable: bool,
+    pub is_running: bool,
+    pub is_portable: bool,
+    pub last_run: Option<AutoSyncRunItem>,
+    pub headless_notice: Option<String>,
 }

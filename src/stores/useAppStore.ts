@@ -22,14 +22,20 @@ interface AppStore {
   currentTab: NavTab;
   language: Language;
   theme: Theme;
+  appVersion: string;
+  isPortable: boolean;
   runningModal: RunningModalState;
   toasts: ToastMessage[];
+  isChangelogOpen: boolean;
 
+  setAppMeta: (version: string, isPortable: boolean) => void;
   setCurrentTab: (tab: NavTab) => void;
   setLanguage: (lang: Language) => void;
   setTheme: (theme: Theme) => void;
   openRunningModal: (browser: string, sourceId?: number) => void;
   closeRunningModal: () => void;
+  openChangelog: () => void;
+  closeChangelog: () => void;
   showToast: (content: string, type?: 'info' | 'success' | 'warning' | 'error') => void;
   removeToast: (id: string) => void;
   t: (keyPath: string, params?: Record<string, string | number>) => string;
@@ -41,33 +47,66 @@ const locales = {
 };
 
 const previewParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
-const previewLanguage: Language = previewParams?.get('lang') === 'en-US' ? 'en-US' : 'zh-CN';
+const queryLang = previewParams?.get('lang');
+const storedLang = typeof localStorage !== 'undefined' ? localStorage.getItem('app_language') : null;
+const initialLanguage: Language =
+  queryLang === 'en-US' || queryLang === 'zh-CN'
+    ? queryLang
+    : storedLang === 'en-US' || storedLang === 'zh-CN'
+      ? storedLang
+      : 'zh-CN';
+
+const storedTheme = typeof localStorage !== 'undefined' ? localStorage.getItem('app_theme') : null;
+const initialTheme: Theme =
+  storedTheme === 'light' || storedTheme === 'dark' || storedTheme === 'system'
+    ? storedTheme
+    : 'system';
+
 const previewTab = previewParams?.get('tab');
 const initialTab: NavTab =
-  previewTab === 'analytics' || previewTab === 'sources' || previewTab === 'ai' || previewTab === 'settings'
-    ? previewTab
-    : 'history';
+  previewTab === 'history' || previewTab === 'analytics' || previewTab === 'sources' || previewTab === 'ai' || previewTab === 'privacy' || previewTab === 'settings'
+    ? (previewTab as NavTab)
+    : 'home';
+
+export function syncDocumentLocale(lang: Language) {
+  if (typeof document === 'undefined') return;
+  document.documentElement.lang = lang;
+  document.title = lang === 'en-US'
+    ? 'Browsory — Local Encrypted Browser History'
+    : 'Browsory - 浏览足迹';
+}
+
+syncDocumentLocale(initialLanguage);
 
 export const useAppStore = create<AppStore>((set, get) => ({
   currentTab: initialTab,
-  language: previewLanguage,
-  theme: 'system',
+  language: initialLanguage,
+  theme: initialTheme,
+  appVersion: '0.2.0',
+  isPortable: false,
   runningModal: {
     isOpen: false,
     browser: '',
   },
   toasts: [],
+  isChangelogOpen: false,
 
+  setAppMeta: (version, isPortable) => set({ appVersion: version, isPortable }),
   setCurrentTab: (tab) => set({ currentTab: tab }),
 
   setLanguage: (lang) => {
     set({ language: lang });
-    localStorage.setItem('app_language', lang);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('app_language', lang);
+    }
+    syncDocumentLocale(lang);
   },
 
   setTheme: (theme) => {
     set({ theme });
-    localStorage.setItem('app_theme', theme);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('app_theme', theme);
+    }
     applyTheme(theme);
   },
 
@@ -87,6 +126,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
         browser: '',
       },
     }),
+
+  openChangelog: () => set({ isChangelogOpen: true }),
+  closeChangelog: () => set({ isChangelogOpen: false }),
 
   showToast: (content, type = 'info') => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -131,15 +173,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 }));
 
-function applyTheme(theme: Theme) {
+export function applyTheme(theme: Theme) {
+  if (typeof document === 'undefined') return;
   const root = document.documentElement;
   const isDark =
     theme === 'dark' ||
-    (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    (theme === 'system' &&
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   if (isDark) {
     root.classList.add('dark');
   } else {
     root.classList.remove('dark');
   }
+  root.style.colorScheme = isDark ? 'dark' : 'light';
 }

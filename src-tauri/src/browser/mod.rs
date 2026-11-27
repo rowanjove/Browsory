@@ -1,9 +1,12 @@
+pub mod arc;
 pub mod brave;
 pub mod chrome;
 pub mod chromium;
 pub mod edge;
 pub mod firefox;
+pub mod opera;
 pub mod vivaldi;
+pub mod zen;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -25,7 +28,10 @@ pub trait BrowserAdapter: Send + Sync {
     fn display_name(&self) -> &'static str;
     fn process_name(&self) -> &'static str;
     fn user_data_dir(&self) -> Option<PathBuf>;
-    fn detect(&self) -> Vec<DiscoveredProfile>;
+    fn detect(&self) -> Vec<DiscoveredProfile> {
+        self.detect_with_running(self.is_running())
+    }
+    fn detect_with_running(&self, is_running: bool) -> Vec<DiscoveredProfile>;
     fn is_running(&self) -> bool {
         crate::process::is_process_running(self.process_name())
     }
@@ -37,14 +43,19 @@ pub fn get_all_adapters() -> Vec<Box<dyn BrowserAdapter>> {
         Box::new(edge::EdgeAdapter),
         Box::new(brave::BraveAdapter),
         Box::new(vivaldi::VivaldiAdapter),
+        Box::new(opera::OperaAdapter),
+        Box::new(arc::ArcAdapter),
         Box::new(firefox::FirefoxAdapter),
+        Box::new(zen::ZenAdapter),
     ]
 }
 
 pub fn detect_all_browsers() -> Vec<DiscoveredProfile> {
+    let running = crate::process::running_process_names();
     let mut results = Vec::new();
     for adapter in get_all_adapters() {
-        results.extend(adapter.detect());
+        let is_running = running.contains(&adapter.process_name().to_lowercase());
+        results.extend(adapter.detect_with_running(is_running));
     }
     results
 }

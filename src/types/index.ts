@@ -70,9 +70,12 @@ export interface HistoryFilter {
   end_time?: number;
   cursor_time?: number;
   cursor_id?: number;
+  /** Stable sort-key cursor for non-time history ordering. */
+  cursor_sort_value?: number;
   limit?: number;
   only_favorites?: boolean;
   tag?: string;
+  ai_scope?: boolean;
   sort_by?: 'time_desc' | 'time_asc' | 'visit_count' | 'duration';
   offset?: number;
 }
@@ -88,6 +91,8 @@ export interface HistoryPageResult {
   items: VisitListItem[];
   next_cursor_time: number | null;
   next_cursor_id: number | null;
+  /** Stable sort-key cursor returned by newer backends; absent on older mocks. */
+  next_cursor_sort_value?: number | null;
   has_more: boolean;
 }
 
@@ -100,9 +105,13 @@ export interface SyncResult {
   duplicate_count: number;
   failed_count: number;
   duration_ms: number;
+  status?: 'success' | 'skipped' | 'failed';
+  error?: string | null;
 }
 
 export interface AppInfo {
+  version: string;
+  is_portable: boolean;
   app_dir: string;
   db_path: string;
   db_size_bytes: number;
@@ -110,7 +119,15 @@ export interface AppInfo {
   logs_dir: string;
 }
 
-export type NavTab = 'history' | 'analytics' | 'sources' | 'ai' | 'settings';
+export interface UpdateCheckResult {
+  current_version: string;
+  latest_version?: string | null;
+  release_url?: string | null;
+  notes?: string | null;
+  update_available: boolean;
+}
+
+export type NavTab = 'home' | 'history' | 'analytics' | 'sources' | 'ai' | 'privacy' | 'settings';
 
 export interface DomainStat {
   domain: string;
@@ -222,6 +239,12 @@ export interface TestAiPayload {
   model: string;
 }
 
+export interface TestEmbeddingPayload {
+  base_url?: string;
+  api_key?: string;
+  model: string;
+}
+
 export interface TestAiResult {
   success: boolean;
   latency_ms: number;
@@ -247,11 +270,40 @@ export interface BatchImportResult {
   results: BatchImportFileResult[];
 }
 
+export type VaultStatus =
+  | 'unconfigured'
+  | 'legacy_plaintext'
+  | 'locked'
+  | 'locking'
+  | 'unlocking'
+  | 'unlocked'
+  | 'migrating'
+  | { error: string };
+
+export interface VaultStatusInfo {
+  recovery_key_pending: boolean;
+  status: VaultStatus;
+  has_envelope: boolean;
+  has_dpapi_wrap?: boolean;
+  has_plaintext_db: boolean;
+  is_portable: boolean;
+}
+
+export interface PassiveResumeResult {
+  unlocked: boolean;
+  pin_required: boolean;
+  is_locked_out: boolean;
+  lockout_remaining_secs: number;
+  error_message?: string | null;
+}
+
 export interface SecurityState {
   pin_enabled: boolean;
+  pin_migration_needed?: boolean;
   auto_lock_minutes: number;
   lock_on_minimize: boolean;
   lock_on_sleep: boolean;
+  native_sleep_lock_supported?: boolean;
   is_locked_out: boolean;
   lockout_remaining_secs: number;
 }
@@ -454,6 +506,8 @@ export interface TakeoutImportSummary {
   urls_inserted: number;
   visits_inserted: number;
   duplicates_skipped: number;
+  invalid_records_skipped?: number;
+  unknown_time_records?: number;
   duration_ms: number;
 }
 
@@ -467,7 +521,165 @@ export interface LinkHealthStatus {
   wayback_url: string;
 }
 
+export interface SourceDiagnostic {
+  id: number;
+  browser: string;
+  profile: string;
+  source_type: string;
+  enabled: boolean;
+  last_visit_time: number;
+  last_sync_at: number | null;
+}
 
+export interface DiagnosticsInfo {
+  app_version: string;
+  os_name: string;
+  os_version: string;
+  arch: string;
+  total_memory_mb: number;
+  db_path: string;
+  db_size_bytes: number;
+  db_schema_version: number;
+  sqlite_version?: string;
+  sqlcipher_version?: string | null;
+  total_visits: number;
+  total_urls: number;
+  total_sources: number;
+  integrity_status: string;
+  fts_status: string;
+  sources: SourceDiagnostic[];
+}
 
+export interface StorageBreakdown {
+  database_bytes: number;
+  wal_bytes: number;
+  backups_bytes: number;
+  backups_count: number;
+  logs_bytes: number;
+  temp_bytes: number;
+  total_bytes: number;
+}
+
+export interface StorageCleanResult {
+  bytes_freed: number;
+  temp_files_deleted: number;
+  old_logs_deleted: number;
+}
+
+export interface PageArchiveSummary {
+  id: number;
+  url_id: number;
+  page_uuid: string;
+  url: string;
+  title: string;
+  domain: string;
+  archive_level: string;
+  relative_path: string;
+  has_markdown: boolean;
+  has_snapshot_html: boolean;
+  has_screenshot: boolean;
+  size_bytes: number;
+  archived_at: number;
+}
+
+export interface PageArchiveDetail {
+  summary: PageArchiveSummary;
+  markdown_content?: string | null;
+  snapshot_html?: string | null;
+}
+
+export interface SaveArchivePayload {
+  url_id: number;
+  archive_level: string;
+  markdown?: string;
+  html?: string;
+  title?: string;
+  author?: string;
+}
+
+export interface BackgroundJob {
+  id: string;
+  job_type: string;
+  title: string;
+  status: string;
+  progress_current: number;
+  progress_total: number;
+  message?: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+// Milestone H: E2EE Multi-Device Sync
+export interface WebDavConfig {
+  enabled: boolean;
+  server_url: string;
+  username: string;
+  password: string;
+  remote_dir: string;
+}
+
+export interface SyncStatusReport {
+  success: boolean;
+  uploaded_items: number;
+  downloaded_items: number;
+  message: string;
+  timestamp: number;
+}
+
+export type SchedulerHealthStatus =
+  | 'registered'
+  | 'disabled'
+  | 'missing'
+  | 'outdated_path'
+  | 'unsupported'
+  | 'error';
+
+export interface AutoSyncSourceSummary {
+  source_id: number;
+  browser: string;
+  profile: string;
+  status: 'success' | 'skipped' | 'failed';
+  read_count: number;
+  inserted_count: number;
+  duplicate_count: number;
+  duration_ms: number;
+  error?: string | null;
+}
+
+export interface AutoSyncRunItem {
+  id: number;
+  run_uuid: string;
+  trigger_type: string;
+  started_at: number;
+  finished_at?: number | null;
+  status: string;
+  sources_total: number;
+  sources_succeeded: number;
+  sources_skipped: number;
+  sources_failed: number;
+  total_read: number;
+  total_inserted: number;
+  total_duplicate: number;
+  duration_ms: number;
+  error_summary?: string | null;
+  details: AutoSyncSourceSummary[];
+}
+
+export interface AutoSyncStatus {
+  enabled: boolean;
+  interval_days: number;
+  last_run_at?: number | null;
+  last_success_at?: number | null;
+  next_run_at?: number | null;
+  bound_sources_count: number;
+  scheduler_status: SchedulerHealthStatus;
+  task_name: string;
+  scheduler_error?: string | null;
+  headless_capable: boolean;
+  is_running: boolean;
+  is_portable: boolean;
+  last_run?: AutoSyncRunItem | null;
+  headless_notice?: string | null;
+}
 
 

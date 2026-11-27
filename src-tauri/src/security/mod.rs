@@ -1,3 +1,13 @@
+pub(crate) mod atomic_file;
+pub mod backup;
+pub mod directory_lock;
 pub mod dpapi;
+pub mod envelope;
+pub mod fs_boundary;
 pub mod master_key;
+pub mod plaintext;
+pub(crate) mod power;
+pub mod restore;
 pub mod secret_store;
+pub mod session;
+pub mod vault;

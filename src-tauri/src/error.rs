@@ -3,6 +3,8 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AppError {
+    #[error("历史展开记录超过内存准备预算，需使用加密暂存")]
+    MemoryPreparationLimit,
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
 
@@ -26,6 +28,18 @@ pub enum AppError {
 
     #[error("Sync error: {0}")]
     Sync(String),
+
+    #[error("Security error: {0}")]
+    Security(String),
+
+    #[error("Vault locked: {0}")]
+    VaultLocked(String),
+
+    #[error("AI error: {0}")]
+    Ai(String),
+
+    #[error("Migration error: {0}")]
+    Migration(String),
 
     #[error("System error: {0}")]
     System(String),

@@ -1,10 +1,11 @@
 [package]
 name = "browsory"
-version = "0.1.0"
+version = "0.2.0"
 description = "Browsory - 浏览足迹 (Local Browser History Archive Tool)"
 authors = ["Browsory contributors"]
+license = "Apache-2.0"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.89"
 
 [lib]
 name = "app_lib"
@@ -13,13 +14,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rusqlite = { version = "0.32", features = ["bundled", "bundled-full"] }
+rusqlite = { version = "0.42", default-features = false, features = ["cache", "fallible_uint", "bundled-sqlcipher", "modern-full", "backup"] }
+zeroize = { version = "1.8", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 sysinfo = "0.33"
@@ -31,15 +36,22 @@ uuid = { version = "1", features = ["v4"] }
 url = "2.5"
 regex = "1.11"
 csv = "1.3"
-rust_xlsxwriter = "0.82"
+rust_xlsxwriter = { version = "0.102", features = ["constant_memory"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+tokio = { version = "1.54", features = ["time"] }
 argon2 = "0.5"
 aes-gcm = "0.10"
 rand = "0.8"
 hex = "0.4"
-keyring = "3"
+keyring = { version = "3", features = ["windows-native"] }
 notify = "6.1"
 notify-debouncer-mini = "0.4"
+tracing-appender = "0.2"
+zip = { version = "9.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+hkdf = "0.12"
+hmac = "0.12"
+flate2 = "1.0"
+fs2 = "0.4"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_Globalization", "Win32_System_Power", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

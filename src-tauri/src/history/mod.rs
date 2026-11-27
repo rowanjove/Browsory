@@ -1,7 +1,10 @@
+pub mod batch_sync;
+pub mod coordinator;
 pub mod dedup;
 pub mod health;
 pub mod normalize;
 pub mod parser;
+pub(crate) mod record_spool;
 pub mod snapshot;
 pub mod sync;
 pub mod takeout;

@@ -19,6 +19,28 @@ pub fn detect_chromium_profiles(
     // 1. Try to parse Local State for profile display names
     let display_names = parse_local_state(user_data_dir);
 
+    // Check if the directory itself is directly a profile (e.g. Opera, Opera GX)
+    let direct_history = user_data_dir.join("History");
+    if direct_history.exists() && direct_history.is_file() {
+        let metadata = fs::metadata(&direct_history).ok();
+        let history_size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        let last_modified = metadata
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+
+        profiles.push(DiscoveredProfile {
+            source_id: None,
+            browser: browser_id.to_string(),
+            profile_id: "Default".to_string(),
+            profile_name: "Default".to_string(),
+            history_path: direct_history.to_string_lossy().to_string(),
+            history_size_bytes,
+            last_modified,
+            is_running,
+        });
+    }
+
     // 2. Scan User Data directory for folders containing a History file
     if let Ok(entries) = fs::read_dir(user_data_dir) {
         for entry in entries.flatten() {

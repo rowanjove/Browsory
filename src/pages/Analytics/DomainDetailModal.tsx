@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   X,
   Globe,
@@ -16,6 +16,8 @@ import { tauriApi } from '../../services/tauri';
 import { DomainDetail, PathTreeNode } from '../../types';
 import { useHistoryStore } from '../../stores/useHistoryStore';
 import { useAppStore } from '../../stores/useAppStore';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
+import { createRequestSequence } from '../../services/requestSequence';
 
 interface DomainDetailModalProps {
   domain: string | null;
@@ -25,6 +27,7 @@ interface DomainDetailModalProps {
 }
 
 const PathNodeItem: React.FC<{ node: PathTreeNode; level?: number }> = ({ node, level = 0 }) => {
+  const { t } = useAppStore();
   const [isOpen, setIsOpen] = useState(level < 1);
   const hasChildren = node.children && node.children.length > 0;
 
@@ -59,8 +62,8 @@ const PathNodeItem: React.FC<{ node: PathTreeNode; level?: number }> = ({ node, 
         </div>
 
         <div className="flex items-center gap-3 text-[11px] text-slate-400 shrink-0">
-          <span>{node.unique_urls} 个 URL</span>
-          <span className="text-blue-600 dark:text-blue-400 font-semibold">{node.visits} 次</span>
+          <span>{node.unique_urls} URL{node.unique_urls === 1 ? '' : 's'}</span>
+          <span className="text-blue-600 dark:text-blue-400 font-semibold">{node.visits} {t('domain.visits')}</span>
         </div>
       </div>
 
@@ -82,26 +85,37 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
   endTime,
 }) => {
   const { setSearch } = useHistoryStore();
-  const { setCurrentTab } = useAppStore();
+  const { setCurrentTab, t, language } = useAppStore();
 
   const [detail, setDetail] = useState<DomainDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'tree' | 'urls'>('overview');
+  const detailSequence = useRef(createRequestSequence());
+  const dialogRef = useDialogFocus<HTMLDivElement>({ isOpen: Boolean(domain), onClose });
 
   useEffect(() => {
-    if (!domain) return;
+    const requestId = detailSequence.current.next();
+    if (!domain) {
+      setDetail(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
+    setDetail(null);
     tauriApi
       .getDomainDetail(domain, startTime, endTime)
       .then((res) => {
-        setDetail(res);
+        if (detailSequence.current.isCurrent(requestId)) setDetail(res);
       })
       .catch((e) => {
-        console.error('Failed to load domain detail', e);
+        if (detailSequence.current.isCurrent(requestId)) console.error('Failed to load domain detail', e);
       })
       .finally(() => {
-        setLoading(false);
+        if (detailSequence.current.isCurrent(requestId)) setLoading(false);
       });
+    return () => {
+      detailSequence.current.next();
+    };
   }, [domain, startTime, endTime]);
 
   if (!domain) return null;
@@ -114,7 +128,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
 
   const formatTime = (ts: number) => {
     if (!ts) return '-';
-    return new Date(ts).toLocaleString('zh-CN', {
+    return new Date(ts).toLocaleString(language === 'en-US' ? 'en-US' : 'zh-CN', {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -127,7 +141,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 text-xs">
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="domain-detail-title" tabIndex={-1} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50">
           <div className="flex items-center gap-2.5">
@@ -136,23 +150,26 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
             </div>
             <div>
               <h2 className="font-semibold text-slate-900 dark:text-slate-100 text-sm flex items-center gap-2">
-                <span>{domain}</span>
+                <span id="domain-detail-title">{domain}</span>
               </h2>
-              <p className="text-[11px] text-slate-400">域名访问深度下钻与 URL 路径探索</p>
+              <p className="text-[11px] text-slate-400">{t('domain.subtitle')}</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={handleSearchSite}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-400 border border-blue-200 dark:border-blue-900 hover:bg-blue-100 transition"
-              title="在主检索中筛选该网站"
+              title={t('domain.search')}
             >
               <Search className="w-3.5 h-3.5" />
-              <span>搜索该站</span>
+              <span>{t('domain.search')}</span>
             </button>
             <button
+              type="button"
               onClick={onClose}
+              aria-label={t('dialogs.closeDomain')}
               className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded"
             >
               <X className="w-4 h-4" />
@@ -170,7 +187,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
                 : 'border-transparent text-slate-500 hover:text-slate-700 dark:text-slate-400'
             }`}
           >
-            概览与时段分布
+            {t('domain.overview')}
           </button>
           <button
             onClick={() => setActiveTab('tree')}
@@ -181,7 +198,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
             }`}
           >
             <Folder className="w-3.5 h-3.5" />
-            <span>URL 路径树</span>
+            <span>{t('domain.tree')}</span>
           </button>
           <button
             onClick={() => setActiveTab('urls')}
@@ -192,7 +209,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
             }`}
           >
             <Link2 className="w-3.5 h-3.5" />
-            <span>Top 访问网页 ({detail?.top_urls.length || 0})</span>
+            <span>{t('domain.topUrls', { count: detail?.top_urls.length || 0 })}</span>
           </button>
         </div>
 
@@ -201,7 +218,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
           {loading ? (
             <div className="flex flex-col items-center justify-center h-48 gap-2 text-slate-400">
               <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
-              <span>加载域名指标与路径树中...</span>
+              <span>{t('domain.loading')}</span>
             </div>
           ) : detail ? (
             <>
@@ -210,25 +227,25 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
                   {/* KPI Cards */}
                   <div className="grid grid-cols-4 gap-3">
                     <div className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
-                      <div className="text-[11px] text-slate-400 mb-1">总访问量</div>
+                      <div className="text-[11px] text-slate-400 mb-1">{t('domain.totalVisits')}</div>
                       <div className="text-xl font-bold text-slate-800 dark:text-slate-100 font-mono">
                         {detail.total_visits}
                       </div>
                     </div>
                     <div className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
-                      <div className="text-[11px] text-slate-400 mb-1">独立网页数</div>
+                      <div className="text-[11px] text-slate-400 mb-1">{t('domain.uniqueUrls')}</div>
                       <div className="text-xl font-bold text-slate-800 dark:text-slate-100 font-mono">
                         {detail.unique_urls}
                       </div>
                     </div>
                     <div className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
-                      <div className="text-[11px] text-slate-400 mb-1">首次访问</div>
+                      <div className="text-[11px] text-slate-400 mb-1">{t('domain.firstVisit')}</div>
                       <div className="text-xs font-medium text-slate-700 dark:text-slate-300">
                         {formatTime(detail.first_visit_time)}
                       </div>
                     </div>
                     <div className="p-3.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
-                      <div className="text-[11px] text-slate-400 mb-1">最近一次访问</div>
+                      <div className="text-[11px] text-slate-400 mb-1">{t('domain.lastVisit')}</div>
                       <div className="text-xs font-medium text-slate-700 dark:text-slate-300">
                         {formatTime(detail.last_visit_time)}
                       </div>
@@ -236,10 +253,10 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
                   </div>
 
                   {/* Hourly 24h Distribution */}
-                  <div className="p-4 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-850">
+                  <div className="p-4 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800">
                     <div className="font-semibold text-slate-800 dark:text-slate-100 mb-3 flex items-center gap-2">
                       <Clock className="w-3.5 h-3.5 text-blue-500" />
-                      <span>全天 24 小时访问时段分布</span>
+                      <span>{t('domain.hourly')}</span>
                     </div>
                     <div className="flex items-end gap-1.5 h-28 pt-2">
                       {detail.hourly_distribution.map((h) => {
@@ -256,7 +273,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
 
                             {/* Tooltip */}
                             <div className="absolute -top-7 hidden group-hover:flex items-center px-1.5 py-0.5 rounded bg-slate-800 text-white text-[10px] pointer-events-none whitespace-nowrap z-10">
-                              {h.hour}点: {h.count} 次
+                              {language === 'en-US' ? `${h.hour}:00 — ${h.count}` : `${h.hour}点: ${h.count} 次`}
                             </div>
                           </div>
                         );
@@ -269,14 +286,14 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
               {activeTab === 'tree' && (
                 <div className="flex flex-col gap-3">
                   <div className="flex items-center justify-between text-slate-500 text-[11px]">
-                    <span>按 URL 路径层级自动归类聚合：</span>
-                    <span>共 {detail.path_tree.length} 个根路径分支</span>
+                    <span>{t('domain.treeHint')}</span>
+                    <span>{t('domain.treeRoots', { count: detail.path_tree.length })}</span>
                   </div>
 
                   {detail.path_tree.length === 0 ? (
-                    <div className="text-center py-12 text-slate-400">暂无层级子路径数据</div>
+                    <div className="text-center py-12 text-slate-400">{t('domain.treeEmpty')}</div>
                   ) : (
-                    <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850 flex flex-col gap-1 max-h-[450px] overflow-y-auto">
+                    <div className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800 flex flex-col gap-1 max-h-[450px] overflow-y-auto">
                       {detail.path_tree.map((node, idx) => (
                         <PathNodeItem key={`${node.full_path}-${idx}`} node={node} level={0} />
                       ))}
@@ -288,19 +305,21 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
               {activeTab === 'urls' && (
                 <div className="flex flex-col gap-2">
                   {detail.top_urls.length === 0 ? (
-                    <div className="text-center py-12 text-slate-400">暂无热门网页记录</div>
+                    <div className="text-center py-12 text-slate-400">{t('domain.urlsEmpty')}</div>
                   ) : (
                     <div className="flex flex-col divide-y divide-slate-100 dark:divide-slate-800">
                       {detail.top_urls.map((u, i) => (
                         <div key={i} className="py-2.5 flex items-center justify-between gap-4 group">
                           <div className="flex flex-col gap-0.5 truncate flex-1">
                             <div className="font-medium text-slate-800 dark:text-slate-200 truncate text-xs">
-                              {u.title || '(无标题)'}
+                              {u.title || (language === 'en-US' ? '(Untitled)' : '(无标题)')}
                             </div>
                             <a
                               href={u.url}
-                              target="_blank"
-                              rel="noreferrer"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                tauriApi.openExternalUrl(u.url);
+                              }}
                               className="text-[11px] text-blue-500 dark:text-blue-400 hover:underline truncate flex items-center gap-1 font-mono"
                             >
                               <span className="truncate">{u.url}</span>
@@ -311,7 +330,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
                           <div className="flex items-center gap-4 shrink-0 text-[11px] text-slate-400">
                             <span>{formatTime(u.last_visit_time)}</span>
                             <span className="px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 font-semibold font-mono">
-                              {u.visits} 次
+                              {u.visits} {t('domain.visits')}
                             </span>
                           </div>
                         </div>
@@ -322,7 +341,7 @@ export const DomainDetailModal: React.FC<DomainDetailModalProps> = ({
               )}
             </>
           ) : (
-            <div className="text-center py-12 text-slate-400">未能获取到该域名的分析详情</div>
+            <div className="text-center py-12 text-slate-400">{t('domain.loadFailed')}</div>
           )}
         </div>
       </div>

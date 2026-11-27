@@ -160,6 +160,20 @@ pub const DEFAULT_TOPICS: &[DefaultTopicDef] = &[
 ];
 
 pub fn ensure_default_topics(conn: &Connection) -> AppResult<()> {
+    let existing: i64 = conn.query_row("SELECT count(*) FROM topics", [], |r| r.get(0))?;
+    if existing >= DEFAULT_TOPICS.len() as i64 {
+        let mut present = 0usize;
+        let mut check_stmt = conn.prepare_cached("SELECT 1 FROM topics WHERE name = ?1 LIMIT 1")?;
+        for def in DEFAULT_TOPICS {
+            if check_stmt.exists(params![def.name])? {
+                present += 1;
+            }
+        }
+        if present == DEFAULT_TOPICS.len() {
+            return Ok(());
+        }
+    }
+
     let now = chrono::Utc::now().timestamp_millis();
     let mut stmt = conn.prepare_cached(
         "INSERT OR IGNORE INTO topics (name, category, icon, color, created_at) VALUES (?1, ?2, ?3, ?4, ?5)"
@@ -205,22 +219,45 @@ pub fn auto_tag_unclassified_urls(conn: &Connection, limit: usize) -> AppResult<
 
     let active_rules = crate::database::repository::get_active_privacy_rules(conn)?;
     let hidden_rules: Vec<_> = active_rules
-        .into_iter()
+        .iter()
         .filter(|r| r.rule_type == "hidden")
+        .cloned()
         .collect();
+    let mut hidden_conds = Vec::new();
+    let mut hidden_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    crate::database::repository::build_hidden_rule_conditions(
+        &active_rules,
+        "u.domain",
+        "u.url",
+        &mut hidden_conds,
+        &mut hidden_params,
+    );
+    let hidden_clause = if hidden_conds.is_empty() {
+        String::new()
+    } else {
+        format!("AND {}", hidden_conds.join(" AND "))
+    };
 
-    let mut stmt = conn.prepare(
+    let sql = format!(
         r#"
         SELECT u.id, u.url, u.title, u.domain
         FROM urls u
         LEFT JOIN url_topics ut ON u.id = ut.url_id
-        WHERE ut.url_id IS NULL
-        LIMIT ?1
-        "#,
-    )?;
+        WHERE ut.url_id IS NULL {hidden_clause}
+        ORDER BY u.id DESC
+        LIMIT ?
+        "#
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let limit_i64 = limit as i64;
+    let mut query_params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(hidden_params.len() + 1);
+    for p in &hidden_params {
+        query_params.push(p.as_ref());
+    }
+    query_params.push(&limit_i64);
 
     let urls: Vec<(i64, String, String, String)> = stmt
-        .query_map([limit], |row| {
+        .query_map(query_params.as_slice(), |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -228,30 +265,48 @@ pub fn auto_tag_unclassified_urls(conn: &Connection, limit: usize) -> AppResult<
                 row.get::<_, Option<String>>(3)?.unwrap_or_default(),
             ))
         })?
-        .flatten()
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    let mut tagged_count = 0;
-    let mut insert_topic_stmt = conn.prepare_cached(
-        r#"
-        INSERT OR IGNORE INTO url_topics (url_id, topic_id, confidence)
-        SELECT ?1, id, ?2 FROM topics WHERE name = ?3
-        "#,
-    )?;
-
-    for (url_id, url, title, domain) in urls {
-        if hidden_rules
-            .iter()
-            .any(|r| crate::database::repository::matches_privacy_rule(&r.pattern, &domain, &url))
-        {
-            continue;
-        }
-        let classifications = classify_url(&title, &domain);
-        for (topic_name, confidence) in classifications {
-            insert_topic_stmt.execute(params![url_id, confidence, topic_name])?;
-            tagged_count += 1;
-        }
+    if urls.is_empty() {
+        return Ok(0);
     }
 
-    Ok(tagged_count)
+    conn.execute_batch("SAVEPOINT browsory_auto_tag")?;
+    let tag_res = (|| -> AppResult<usize> {
+        let mut tagged_count = 0;
+        let mut insert_topic_stmt = conn.prepare_cached(
+            r#"
+            INSERT OR IGNORE INTO url_topics (url_id, topic_id, confidence)
+            SELECT ?1, id, ?2 FROM topics WHERE name = ?3
+            "#,
+        )?;
+
+        for (url_id, url, title, domain) in urls {
+            if hidden_rules.iter().any(|r| {
+                crate::database::repository::matches_privacy_rule(&r.pattern, &domain, &url)
+            }) {
+                continue;
+            }
+            let classifications = classify_url(&title, &domain);
+            for (topic_name, confidence) in classifications {
+                insert_topic_stmt.execute(params![url_id, confidence, topic_name])?;
+                tagged_count += 1;
+            }
+        }
+
+        Ok(tagged_count)
+    })();
+
+    match tag_res {
+        Ok(tagged_count) => {
+            conn.execute_batch("RELEASE SAVEPOINT browsory_auto_tag")?;
+            Ok(tagged_count)
+        }
+        Err(err) => {
+            let _ = conn.execute_batch(
+                "ROLLBACK TO SAVEPOINT browsory_auto_tag; RELEASE SAVEPOINT browsory_auto_tag;",
+            );
+            Err(err)
+        }
+    }
 }

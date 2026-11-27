@@ -9,6 +9,23 @@ pub fn build_wayback_url(url: &str) -> String {
     format!("https://web.archive.org/web/*/{}", url)
 }
 
+/// Literal/local-name policy only: never resolve DNS while filtering history.
+pub(crate) fn is_non_public_url(raw_url: &str) -> bool {
+    let Ok(parsed) = Url::parse(raw_url) else {
+        return false;
+    };
+    match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => is_ip_restricted(&std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => is_ip_restricted(&std::net::IpAddr::V6(ip)),
+        Some(url::Host::Domain(host)) => {
+            host.eq_ignore_ascii_case("localhost")
+                || host.to_ascii_lowercase().ends_with(".localhost")
+                || host.to_ascii_lowercase().ends_with(".local")
+        }
+        None => false,
+    }
+}
+
 pub fn is_ip_restricted(ip: &std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(ipv4) => {
@@ -99,31 +116,7 @@ pub fn is_safe_public_url(raw_url: &str) -> Result<Url, String> {
     Ok(parsed)
 }
 
-fn resolve_hostname_ips(parsed: &Url) -> Result<Vec<std::net::SocketAddr>, String> {
-    let port = parsed.port_or_known_default().unwrap_or(80);
-    let host = match parsed.host() {
-        Some(url::Host::Domain(d)) => d,
-        Some(url::Host::Ipv4(ipv4)) => {
-            if is_ip_restricted(&std::net::IpAddr::V4(ipv4)) {
-                return Err("禁止探测本地或私有 IP (SSRF 防护)".to_string());
-            }
-            return Ok(vec![std::net::SocketAddr::new(
-                std::net::IpAddr::V4(ipv4),
-                port,
-            )]);
-        }
-        Some(url::Host::Ipv6(ipv6)) => {
-            if is_ip_restricted(&std::net::IpAddr::V6(ipv6)) {
-                return Err("禁止探测本地或私有 IPv6 (SSRF 防护)".to_string());
-            }
-            return Ok(vec![std::net::SocketAddr::new(
-                std::net::IpAddr::V6(ipv6),
-                port,
-            )]);
-        }
-        None => return Err("缺少有效主机名".to_string()),
-    };
-
+fn resolve_hostname_ips(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
     let addr_str = format!("{}:{}", host, port);
     match std::net::ToSocketAddrs::to_socket_addrs(&addr_str.as_str()) {
         Ok(addrs) => {
@@ -149,15 +142,57 @@ fn resolve_hostname_ips(parsed: &Url) -> Result<Vec<std::net::SocketAddr>, Strin
     }
 }
 
+async fn resolve_with_timeout(
+    timeout: Duration,
+    work: impl FnOnce() -> Result<Vec<std::net::SocketAddr>, String> + Send + 'static,
+) -> Result<Vec<std::net::SocketAddr>, String> {
+    match tokio::time::timeout(timeout, tauri::async_runtime::spawn_blocking(work)).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(format!("DNS 工作任务失败: {error}")),
+        Err(_) => Err("DNS 解析超时，请重试".into()),
+    }
+}
+
+pub async fn probe_url_status_for_operation(
+    url: &str,
+    operation: &crate::security::session::VaultOperation,
+) -> (Option<u16>, bool, Option<String>) {
+    if let Err(error) = operation.check() {
+        return (None, false, Some(error.to_string()));
+    }
+    let result = probe_url_status(url).await;
+    if let Err(error) = operation.check() {
+        return (None, false, Some(error.to_string()));
+    }
+    result
+}
+
 pub async fn probe_url_status(url: &str) -> (Option<u16>, bool, Option<String>) {
     let parsed = match is_safe_public_url(url) {
         Ok(p) => p,
         Err(err_msg) => return (None, false, Some(err_msg)),
     };
 
-    let resolved_addrs = match resolve_hostname_ips(&parsed) {
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let resolved = match parsed.host() {
+        Some(url::Host::Ipv4(ip)) => Ok(vec![std::net::SocketAddr::new(ip.into(), port)]),
+        Some(url::Host::Ipv6(ip)) => Ok(vec![std::net::SocketAddr::new(ip.into(), port)]),
+        Some(url::Host::Domain(host)) => {
+            // The OS resolver cannot be forcibly cancelled. Its detached worker
+            // owns only a host and port: never a URL/path, vault key, operation
+            // or connection. Cancelling the parent prevents late results from
+            // reaching HTTP/SQL, and vault close never waits for OS DNS.
+            let host = host.to_owned();
+            resolve_with_timeout(Duration::from_secs(6), move || {
+                resolve_hostname_ips(&host, port)
+            })
+            .await
+        }
+        None => Err("URL 缺少有效主机名".into()),
+    };
+    let resolved_addrs = match resolved {
         Ok(addrs) => addrs,
-        Err(err_msg) => return (None, false, Some(err_msg)),
+        Err(error) => return (None, false, Some(error)),
     };
     let host = match parsed.host_str() {
         Some(host) => host,
@@ -179,20 +214,16 @@ pub async fn probe_url_status(url: &str) -> (Option<u16>, bool, Option<String>) 
         Err(e) => return (None, false, Some(e.to_string())),
     };
 
-    match client.head(url).send().await {
-        Ok(resp) => {
-            let code = resp.status().as_u16();
-            let alive = code < 400;
-            (Some(code), alive, None)
+    let response = match client.head(url).send().await {
+        Ok(response) if !matches!(response.status().as_u16(), 405 | 501) => Ok(response),
+        _ => client.get(url).send().await,
+    };
+    match response {
+        Ok(response) => {
+            let code = response.status().as_u16();
+            (Some(code), code < 400, None)
         }
-        Err(_) => match client.get(url).send().await {
-            Ok(resp) => {
-                let code = resp.status().as_u16();
-                let alive = code < 400;
-                (Some(code), alive, None)
-            }
-            Err(e2) => (None, false, Some(e2.to_string())),
-        },
+        Err(error) => (None, false, Some(error.to_string())),
     }
 }
 
@@ -235,6 +266,63 @@ pub fn get_url_health(conn: &Connection, url_id: i64) -> AppResult<Option<LinkHe
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dns_wait_is_bounded_and_cannot_hold_a_vault_open() {
+        use crate::security::vault::{VaultManager, VaultStatus};
+        use std::sync::{mpsc, Arc};
+        let root =
+            std::env::temp_dir().join(format!("browsory_dns_cancel_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let vault = Arc::new(VaultManager::unlocked_fixture(root.clone()));
+        let operation = vault.begin_operation().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let request = std::thread::spawn(move || {
+            tauri::async_runtime::block_on(async {
+                operation
+                    .run(async {
+                        resolve_with_timeout(Duration::from_secs(6), move || {
+                            started_tx.send(()).unwrap();
+                            release_rx.recv().unwrap();
+                            finished_tx.send(()).unwrap();
+                            Ok(Vec::new())
+                        })
+                        .await
+                    })
+                    .await
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let closing = vault.clone();
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let locker = std::thread::spawn(move || {
+            locked_tx.send(closing.lock()).unwrap();
+        });
+        let locked = locked_rx.recv_timeout(Duration::from_secs(2));
+        // Always release the synthetic resolver, even if a regression blocks lock.
+        release_tx.send(()).unwrap();
+        finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        locker.join().unwrap();
+        assert!(request.join().unwrap().is_err());
+        assert!(locked.unwrap().is_ok());
+        assert_eq!(vault.status(), VaultStatus::Locked);
+        assert!(vault.master_key().is_none());
+        drop(vault);
+        std::fs::remove_dir_all(root).unwrap();
+
+        let (release_tx, release_rx) = mpsc::channel();
+        let result = tauri::async_runtime::block_on(async {
+            resolve_with_timeout(Duration::from_millis(20), move || {
+                let _ = release_rx.recv();
+                Ok(Vec::new())
+            })
+            .await
+        });
+        release_tx.send(()).unwrap();
+        assert!(result.unwrap_err().contains("超时"));
+    }
+
     use super::*;
 
     #[test]

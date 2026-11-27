@@ -1,44 +1,104 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { Sidebar } from './components/Layout/Sidebar';
-import { HistoryPage } from './pages/History/HistoryPage';
-import { AnalyticsPage } from './pages/Analytics/AnalyticsPage';
-import { SourcesPage } from './pages/Sources/SourcesPage';
-import { AIPage } from './pages/AI/AIPage';
-import { SettingsPage } from './pages/Settings/SettingsPage';
+const RecallHomePage = React.lazy(() => import('./pages/Home/RecallHomePage').then((module) => ({ default: module.RecallHomePage })));
+const HistoryPage = React.lazy(() => import('./pages/History/HistoryPage').then((module) => ({ default: module.HistoryPage })));
+const AnalyticsPage = React.lazy(() => import('./pages/Analytics/AnalyticsPage').then((module) => ({ default: module.AnalyticsPage })));
+const SourcesPage = React.lazy(() => import('./pages/Sources/SourcesPage').then((module) => ({ default: module.SourcesPage })));
+const AIPage = React.lazy(() => import('./pages/AI/AIPage').then((module) => ({ default: module.AIPage })));
+const PrivacyPage = React.lazy(() => import('./pages/Privacy/PrivacyPage').then((module) => ({ default: module.PrivacyPage })));
+const SettingsPage = React.lazy(() => import('./pages/Settings/SettingsPage').then((module) => ({ default: module.SettingsPage })));
 import { RunningModal } from './components/Layout/RunningModal';
 import { ToastContainer } from './components/Common/Toast';
 import { LockScreen } from './components/Layout/LockScreen';
-import { useAppStore } from './stores/useAppStore';
+import { QuickSearchModal } from './components/QuickSearch/QuickSearchModal';
+import { OnboardingWizard } from './components/Onboarding/OnboardingWizard';
+import { CloseConfirmModal } from './components/Layout/CloseConfirmModal';
+import { applyTheme, useAppStore } from './stores/useAppStore';
 import { useSecurityStore } from './stores/useSecurityStore';
+import { useHistoryStore } from './stores/useHistoryStore';
+import { tauriApi } from './services/tauri';
 
 export const App: React.FC = () => {
-  const { currentTab, setTheme, setLanguage } = useAppStore();
+  const { currentTab, setCurrentTab, setTheme, setLanguage, setAppMeta, t, language } = useAppStore();
+  const security = useSecurityStore();
   const {
     isInitialized,
     isLocked,
     pinEnabled,
+    hasDpapiWrap,
     autoLockMinutes,
     lockOnMinimize,
-    lockOnSleep,
     checkSecurityState,
     lock,
-  } = useSecurityStore();
+    lockVault,
+    refreshSyncStatus,
+    triggerSyncAll,
+  } = security;
 
+  const [isQuickSearchOpen, setIsQuickSearchOpen] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const lastActivityRef = useRef<number>(Date.now());
+  const refreshedAfterUnlockRef = useRef(false);
+
+  useEffect(() => {
+    if (!isLocked) return;
+    setIsQuickSearchOpen(false);
+    const clearGlobalSensitiveUi = () => {
+      const state = useAppStore.getState();
+      if (state.toasts.length || state.runningModal.isOpen) {
+        useAppStore.setState({ toasts: [], runningModal: { isOpen: false, browser: '' } });
+      }
+    };
+    clearGlobalSensitiveUi();
+    return useAppStore.subscribe(clearGlobalSensitiveUi);
+  }, [isLocked]);
+
+  useEffect(() => {
+    if (isLocked || !isInitialized) {
+      refreshedAfterUnlockRef.current = false;
+      return;
+    }
+    if (refreshedAfterUnlockRef.current) return;
+    refreshedAfterUnlockRef.current = true;
+    void refreshSyncStatus().catch((error) => {
+      console.warn('[Sync] Unable to refresh status after unlock:', error);
+    });
+  }, [isInitialized, isLocked, refreshSyncStatus]);
 
   useEffect(() => {
     // 1. Restore persisted settings
     const savedTheme = localStorage.getItem('app_theme');
-    if (savedTheme) {
-      setTheme(savedTheme as any);
-    }
+    setTheme(savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system' ? savedTheme : 'system');
     const savedLang = localStorage.getItem('app_language');
     if (savedLang) {
       setLanguage(savedLang as any);
     }
 
+    // Check first launch onboarding
+    const hasOnboarded = localStorage.getItem('browsory_onboarded_v1');
+    if (!hasOnboarded) {
+      setShowOnboarding(true);
+    }
+
     // 2. Initialize security & check lock status
     checkSecurityState();
+    tauriApi
+      .getAppInfo()
+      .then((info) => setAppMeta(info.version, info.is_portable))
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleSystemThemeChange = () => {
+      if (useAppStore.getState().theme === 'system') applyTheme('system');
+    };
+    media.addEventListener?.('change', handleSystemThemeChange);
+    return () => media.removeEventListener?.('change', handleSystemThemeChange);
   }, []);
 
   // 3. User Activity Tracker for Auto-Lock
@@ -66,7 +126,8 @@ export const App: React.FC = () => {
     };
   }, [pinEnabled, isLocked, autoLockMinutes, lock]);
 
-  // 4. Minimize / Sleep / Blur handler
+  // 4. Visibility and global shortcuts. Window blur is deliberately not used:
+  // switching to another app is not the same as minimizing this window.
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'hidden' && lockOnMinimize && pinEnabled) {
@@ -74,52 +135,102 @@ export const App: React.FC = () => {
       }
     };
 
-    const handleWindowBlur = () => {
-      if (lockOnMinimize && pinEnabled) {
-        lock();
-      }
-    };
-
-    // Keyboard shortcut Cmd/Ctrl + L
+    // Keyboard shortcut Cmd/Ctrl + L (Lock), Cmd/Ctrl + K (Quick Search), Ctrl + Shift + Space (Spotlight)
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
         e.preventDefault();
-        if (pinEnabled) {
-          lock();
+        if (!hasDpapiWrap || pinEnabled) {
+          void lockVault();
+        } else {
+          const appStore = useAppStore.getState();
+          appStore.showToast(
+            appStore.language === 'en-US'
+              ? 'Background encryption is active; set a 4-digit PIN in Privacy Settings to enable manual lock'
+              : '已启用后台静默加密；请先在隐私安全页设置 4 位 PIN 码再主动锁屏',
+            'info'
+          );
+          appStore.setCurrentTab('privacy');
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        if (!isLocked) {
+          setIsQuickSearchOpen((prev) => !prev);
+        }
+      } else if (e.ctrlKey && e.shiftKey && (e.code === 'Space' || e.key === ' ')) {
+        e.preventDefault();
+        if (!isLocked) {
+          setIsQuickSearchOpen((prev) => !prev);
         }
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('blur', handleWindowBlur);
     window.addEventListener('keydown', handleGlobalKeyDown);
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('blur', handleWindowBlur);
       window.removeEventListener('keydown', handleGlobalKeyDown);
     };
-  }, [pinEnabled, lockOnMinimize, lock]);
+  }, [lockOnMinimize, pinEnabled, hasDpapiWrap, isLocked, lock, lockVault]);
 
-  // 5. System Sleep / Wake Heartbeat Detection
+  // 6. Listen to Tauri Tray & Window events
   useEffect(() => {
-    let lastHeartbeat = Date.now();
-    const interval = setInterval(() => {
-      const now = Date.now();
-      const diff = now - lastHeartbeat;
-      lastHeartbeat = now;
-
-      // If more than 3500ms elapsed for a 1000ms timer, system was asleep / suspended
-      if (diff > 3500) {
-        if (pinEnabled && lockOnSleep && !isLocked) {
-          console.info(`[Security] System wake detected (time jump: ${diff}ms). Locking application.`);
-          lock();
-        }
+    const handleOpenQuickSearch = () => {
+      if (!isLocked) {
+        setIsQuickSearchOpen(true);
       }
-    }, 1000);
+    };
 
-    return () => clearInterval(interval);
-  }, [pinEnabled, lockOnSleep, isLocked, lock]);
+    window.addEventListener('browsory:open-quick-search', handleOpenQuickSearch);
+
+    let disposed = false;
+    const listeners = new Set<() => void>();
+    const rememberListener = (unlisten: () => void) => {
+      if (disposed) unlisten();
+      else listeners.add(unlisten);
+    };
+
+    listen('browsory://open-quick-search', () => {
+      handleOpenQuickSearch();
+    }).then(rememberListener).catch(() => { /* Native events are unavailable in browser preview. */ });
+
+    listen('browsory://sync-now', () => {
+      triggerSyncAll();
+    }).then(rememberListener).catch(() => { /* Native events are unavailable in browser preview. */ });
+
+    listen('browsory://sync-status', () => {
+      if (useSecurityStore.getState().isLocked) return;
+      void refreshSyncStatus().catch((error) => {
+        console.warn('[Sync] Unable to refresh status:', error);
+      });
+    }).then(rememberListener).catch(() => { /* Native events are unavailable in browser preview. */ });
+
+    listen('browsory://auto-sync-updated', () => {
+      if (useSecurityStore.getState().isLocked) return;
+      void refreshSyncStatus().catch((error) => {
+        console.warn('[AutoSync] Unable to refresh status:', error);
+      });
+    }).then(rememberListener).catch(() => { /* Native events are unavailable in browser preview. */ });
+
+    listen('browsory://lock', () => {
+      void lockVault();
+    }).then(rememberListener).catch(() => { /* Native events are unavailable in browser preview. */ });
+
+    listen('browsory://power', () => {
+      void useSecurityStore.getState().checkSecurityState();
+    }).then(rememberListener).catch(() => { /* Native notifications only. */ });
+
+    listen('browsory://close-requested', () => {
+      setShowCloseConfirm(true);
+    }).then(rememberListener).catch(() => { /* Native events are unavailable in browser preview. */ });
+
+    return () => {
+      window.removeEventListener('browsory:open-quick-search', handleOpenQuickSearch);
+      disposed = true;
+      for (const unlisten of listeners) unlisten();
+      listeners.clear();
+    };
+  }, [isLocked, lockVault, refreshSyncStatus, triggerSyncAll]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
@@ -133,17 +244,19 @@ export const App: React.FC = () => {
         {isLocked ? (
           <div className="flex-1 flex items-center justify-center bg-slate-50 dark:bg-slate-950/40 select-none">
             <div className="text-center text-slate-400 dark:text-slate-600 text-xs">
-              Browsory 数据已安全锁定
+              {language === 'en-US' ? 'Browsory data is safely locked' : 'Browsory 数据已安全锁定'}
             </div>
           </div>
         ) : (
-          <>
+          <React.Suspense fallback={<div role="status" className="flex-1 flex items-center justify-center text-sm text-slate-500">{t('history.loading')}</div>}>
+            {currentTab === 'home' && <RecallHomePage />}
             {currentTab === 'history' && <HistoryPage />}
             {currentTab === 'analytics' && <AnalyticsPage />}
             {currentTab === 'sources' && <SourcesPage />}
             {currentTab === 'ai' && <AIPage />}
+            {currentTab === 'privacy' && <PrivacyPage />}
             {currentTab === 'settings' && <SettingsPage />}
-          </>
+          </React.Suspense>
         )}
       </main>
 
@@ -151,8 +264,24 @@ export const App: React.FC = () => {
       {isLocked && isInitialized && <LockScreen />}
 
       {/* Global Modals & Notifications */}
-      <RunningModal />
-      <ToastContainer />
+      <OnboardingWizard
+        isOpen={showOnboarding && !isLocked}
+        onComplete={() => setShowOnboarding(false)}
+      />
+      {!isLocked && <QuickSearchModal
+        isOpen={isQuickSearchOpen && !isLocked}
+        onClose={() => setIsQuickSearchOpen(false)}
+        onOpenInApp={(item) => {
+          setCurrentTab('history');
+          useHistoryStore.getState().openDetail(item.id);
+        }}
+      />}
+      {!isLocked && <RunningModal />}
+      <CloseConfirmModal
+        isOpen={showCloseConfirm}
+        onClose={() => setShowCloseConfirm(false)}
+      />
+      {!isLocked && <ToastContainer />}
     </div>
   );
 };

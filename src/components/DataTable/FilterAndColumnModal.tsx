@@ -2,17 +2,21 @@ import React from 'react';
 import { X, Check, Filter, Columns3, RotateCcw, Compass } from 'lucide-react';
 import { useHistoryStore, ColumnVisibility } from '../../stores/useHistoryStore';
 import { useAppStore } from '../../stores/useAppStore';
+import { browserFilterOptions } from '../../services/browserMetadata';
+import { useDialogFocus } from '../../hooks/useDialogFocus';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   availableProfiles: string[];
+  availableBrowsers: string[];
 }
 
 export const FilterAndColumnModal: React.FC<Props> = ({
   isOpen,
   onClose,
   availableProfiles,
+  availableBrowsers,
 }) => {
   const {
     selectedBrowsers,
@@ -22,16 +26,11 @@ export const FilterAndColumnModal: React.FC<Props> = ({
     columns,
     toggleColumn,
   } = useHistoryStore();
-  const { t } = useAppStore();
-
+  const { t, language } = useAppStore();
+  const ui = (zh: string, en: string) => language === 'en-US' ? en : zh;
+  const dialogRef = useDialogFocus<HTMLDivElement>({ isOpen, onClose });
   if (!isOpen) return null;
-
-  const browserOptions = [
-    { id: 'chrome', label: 'Google Chrome' },
-    { id: 'edge', label: 'Microsoft Edge' },
-    { id: 'brave', label: 'Brave Browser' },
-    { id: 'vivaldi', label: 'Vivaldi' },
-  ];
+  const browserOptions = browserFilterOptions([...availableBrowsers, ...selectedBrowsers]);
 
   const columnOptions: { key: keyof ColumnVisibility; label: string; required?: boolean }[] = [
     { key: 'time', label: t('history.columns.time'), required: true },
@@ -71,17 +70,18 @@ export const FilterAndColumnModal: React.FC<Props> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs animate-in fade-in duration-100 p-4">
-      <div className="w-full max-w-lg bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-2xl overflow-hidden flex flex-col text-xs">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="history-filter-title" tabIndex={-1} className="w-full max-w-lg max-h-[calc(100vh-2rem)] bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-2xl overflow-hidden flex flex-col text-xs">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50">
           <div className="flex items-center gap-2">
             <Filter className="w-4 h-4 text-blue-500" />
-            <span className="font-semibold text-slate-800 dark:text-slate-100 text-sm">
-              筛选与表格视图设置
+            <span id="history-filter-title" className="font-semibold text-slate-800 dark:text-slate-100 text-sm">
+              {ui('筛选与表格视图设置', 'Filters and table view')}
             </span>
           </div>
           <button
             onClick={onClose}
+            aria-label={ui('关闭筛选窗口', 'Close filters')}
             className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-slate-600 transition"
           >
             <X className="w-4 h-4" />
@@ -89,13 +89,13 @@ export const FilterAndColumnModal: React.FC<Props> = ({
         </div>
 
         {/* Body */}
-        <div className="p-4 flex flex-col gap-4 max-h-[75vh] overflow-y-auto">
+        <div className="p-4 flex-1 min-h-0 flex flex-col gap-4 overflow-y-auto">
           {/* 1. Browser filter */}
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <label className="font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                 <Compass className="w-3.5 h-3.5 text-slate-400" />
-                <span>浏览器来源</span>
+                <span>{ui('浏览器来源', 'Browser sources')}</span>
               </label>
               {selectedBrowsers.length > 0 && (
                 <button
@@ -103,7 +103,7 @@ export const FilterAndColumnModal: React.FC<Props> = ({
                   onClick={() => setSelectedBrowsers([])}
                   className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
                 >
-                  重置为全部
+                  {ui('重置为全部', 'Show all')}
                 </button>
               )}
             </div>
@@ -118,7 +118,7 @@ export const FilterAndColumnModal: React.FC<Props> = ({
                     : 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/40 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`}
               >
-                <span>全部浏览器</span>
+                <span>{ui('全部浏览器', 'All browsers')}</span>
                 {isAllBrowsers && <Check className="w-3.5 h-3.5 text-blue-600" />}
               </button>
 
@@ -148,7 +148,7 @@ export const FilterAndColumnModal: React.FC<Props> = ({
             <div className="flex flex-col gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
               <div className="flex items-center justify-between">
                 <label className="font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
-                  <span>用户配置文件 (Profile)</span>
+                  <span>{ui('用户配置文件 (Profile)', 'Browser profiles')}</span>
                 </label>
                 {selectedProfiles.length > 0 && (
                   <button
@@ -156,7 +156,7 @@ export const FilterAndColumnModal: React.FC<Props> = ({
                     onClick={() => setSelectedProfiles([])}
                     className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
                   >
-                    重置为全部
+                    {ui('重置为全部', 'Show all')}
                   </button>
                 )}
               </div>
@@ -171,7 +171,7 @@ export const FilterAndColumnModal: React.FC<Props> = ({
                       : 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/40 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                   }`}
                 >
-                  全部配置
+                  {ui('全部配置', 'All profiles')}
                 </button>
                 {availableProfiles.map((p) => {
                   const isSelected = selectedProfiles.includes(p);
@@ -199,7 +199,7 @@ export const FilterAndColumnModal: React.FC<Props> = ({
           <div className="flex flex-col gap-2 pt-2 border-t border-slate-100 dark:border-slate-700/60">
             <label className="font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
               <Columns3 className="w-3.5 h-3.5 text-slate-400" />
-              <span>表格列显示</span>
+              <span>{ui('表格列显示', 'Visible columns')}</span>
             </label>
 
             <div className="grid grid-cols-2 gap-1.5">
@@ -219,7 +219,7 @@ export const FilterAndColumnModal: React.FC<Props> = ({
                     <span className="text-slate-700 dark:text-slate-200">
                       {opt.label}
                       {opt.required && (
-                        <span className="ml-1 text-[10px] text-slate-400">(必显)</span>
+                        <span className="ml-1 text-[10px] text-slate-400">{ui('(必显)', '(Required)')}</span>
                       )}
                     </span>
                     <input
@@ -244,7 +244,7 @@ export const FilterAndColumnModal: React.FC<Props> = ({
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>重置筛选</span>
+            <span>{ui('重置筛选', 'Reset filters')}</span>
           </button>
 
           <button
@@ -252,7 +252,7 @@ export const FilterAndColumnModal: React.FC<Props> = ({
             onClick={onClose}
             className="px-4 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition font-medium cursor-pointer"
           >
-            完成
+            {ui('完成', 'Done')}
           </button>
         </div>
       </div>

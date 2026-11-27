@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Build & Release Desktop App
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate release tag
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoManifest = Get-Content src-tauri/Cargo.toml -Raw
+          $cargoVersion = [regex]::Match($cargoManifest, '(?m)^version = "([^"]+)"\r?$').Groups[1].Value
+          if (-not $packageVersion -or $packageVersion -ne $tauriVersion -or $packageVersion -ne $cargoVersion) {
+            throw 'package.json, Cargo.toml, and tauri.conf.json versions do not match'
+          }
+          if ($env:RELEASE_TAG -ne "v$packageVersion") {
+            throw "Release tag $env:RELEASE_TAG does not match version $packageVersion"
+          }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.13.0'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: '12.3.4'
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Remap local paths from Rust binaries
+        shell: pwsh
+        run: |
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $cargoRegistry = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.cargo/registry/src'))
+          $separator = [string][char]31
+          $flags = "--remap-path-prefix=$workspace=." + $separator + "--remap-path-prefix=$cargoRegistry=.cargo/registry/src"
+          [IO.File]::AppendAllText($env:GITHUB_ENV, "CARGO_ENCODED_RUSTFLAGS=$flags`n", [Text.UTF8Encoding]::new($false))
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Test frontend
+        run: pnpm test
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
+
+      - name: Validate Rust formatting
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Validate Rust lint
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Validate Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked --all-targets -- --test-threads=2
+
+      - name: Build Tauri Desktop Application
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATIC_VCRUNTIME: 'true'
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Browsory ${{ github.ref_name }}'
+          releaseBody: 'See CHANGELOG.md for detailed release notes.'
+          releaseDraft: true
+          prerelease: false
+
+      - name: Check static OpenSSL libraries and executable for local paths
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $installer = "src-tauri/target/release/bundle/nsis/Browsory_${version}_x64-setup.exe"
+          ./scripts/verify-openssl-paths.ps1 -Executable src-tauri/target/release/browsory.exe -Installer $installer
+          ./scripts/verify-windows-package.ps1 -Executable src-tauri/target/release/browsory.exe -RequireStaticRuntime -Installer $installer

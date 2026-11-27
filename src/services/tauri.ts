@@ -1,11 +1,20 @@
 import { invoke as rawInvoke } from '@tauri-apps/api/core';
+import { sensitiveRequest } from './vaultSession';
+import { validateExternalHttpUrl } from './externalUrl';
 import { openUrl as openWithSystem } from '@tauri-apps/plugin-opener';
 import {
   AnalyticsSummary,
   AppInfo,
+  AutoSyncRunItem,
+  AutoSyncStatus,
   BackupInfo,
+  BackgroundJob,
   BatchImportResult,
+  DiagnosticsInfo,
   DiscoveredProfile,
+  PageArchiveDetail,
+  PageArchiveSummary,
+  SaveArchivePayload,
   DomainDetail,
   DomainDynamics,
   EmbeddingIndexingStatus,
@@ -23,13 +32,21 @@ import {
   SecurityState,
   SimilarPageItem,
   SmartCollection,
+  StorageBreakdown,
+  StorageCleanResult,
   SyncResult,
   TagItem,
   TakeoutImportSummary,
   TestAiPayload,
   TestAiResult,
+  TestEmbeddingPayload,
   TopicItem,
+  PassiveResumeResult,
+  VaultStatusInfo,
   VisitDetail,
+  WebDavConfig,
+  SyncStatusReport,
+  UpdateCheckResult,
   WebsiteRankingItem,
   WebMemoryAnswer,
   InterestEvolution,
@@ -43,6 +60,14 @@ import {
 } from './mockData';
 
 const isTauri = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__);
+const sessionControlCommands = new Set([
+  'get_app_info', 'check_for_updates', 'quit_application',
+  'get_vault_status', 'create_vault', 'unlock_vault', 'resume_passive_vault', 'unlock_vault_with_recovery_key',
+  'lock_vault', 'change_vault_password', 'regenerate_vault_recovery_key', 'confirm_vault_recovery_key',
+  'migrate_legacy_database', 'get_security_state', 'verify_pin', 'verify_recovery_key', 'reset_pin_with_recovery_key',
+  'restore_database_backup', 'restore_database_backup_file',
+  'retire_legacy_plaintext_backup',
+]);
 
 function handleMock(cmd: string, _args?: any): any {
   switch (cmd) {
@@ -53,9 +78,12 @@ function handleMock(cmd: string, _args?: any): any {
     case 'get_analytics': return mockAnalytics;
     case 'get_app_info': return mockAppInfo;
     case 'get_security_state': return mockSecurityState;
+    case 'get_vault_status': return { status: 'unlocked', has_envelope: true, has_dpapi_wrap: true, has_plaintext_db: false, is_portable: false, recovery_key_pending: false };
+    case 'resume_passive_vault': return { unlocked: true, pin_required: false, is_locked_out: false, lockout_remaining_secs: 0, error_message: null };
     case 'get_website_ranking': return [];
-    case 'get_domain_dynamics': return { new_domains: [], dormant_domains: [], rising_domains: [] };
-    case 'get_interest_evolution': return [];
+    case 'get_domain_dynamics': return { new_domains: [], dormant_domains: [] };
+    case 'get_interest_evolution': return { rising_topics: [], declining_topics: [], new_topics: [], stable_topics: [] };
+    case 'list_smart_collections':
     case 'get_smart_collections': return [];
     case 'get_recent_import_jobs': return [];
     case 'list_privacy_rules': return [];
@@ -63,8 +91,64 @@ function handleMock(cmd: string, _args?: any): any {
     case 'list_tags': return [];
     case 'get_research_sessions': return [];
     case 'get_on_this_day': return { items: [], total_count: 0 };
-    case 'get_embedding_indexing_status': return { total_urls: 100, indexed_urls: 100, is_indexing: false };
+    case 'get_embedding_status':
+    case 'get_embedding_indexing_status': return { total_urls: 100, indexed_urls: 100, pending_urls: 0, model: 'text-embedding-3-small' };
     case 'test_ai_connection': return { success: true, latency_ms: 120, message: 'AI 服务端点连接测试通过（Mock）' };
+    case 'get_auto_sync_status':
+    case 'repair_auto_sync_task':
+      return {
+        enabled: false,
+        interval_days: 30,
+        last_run_at: null,
+        last_success_at: null,
+        next_run_at: null,
+        bound_sources_count: 2,
+        scheduler_status: 'disabled',
+        task_name: 'Browsory_AutoHistorySync',
+        scheduler_error: null,
+        headless_capable: true,
+        is_running: false,
+        is_portable: false,
+        last_run: null,
+        headless_notice: null,
+      };
+    case 'update_auto_sync_config':
+      return {
+        enabled: Boolean(_args?.enabled),
+        interval_days: Number(_args?.intervalDays ?? 30),
+        last_run_at: null,
+        last_success_at: null,
+        next_run_at: _args?.enabled ? Date.now() + Number(_args?.intervalDays ?? 30) * 86_400_000 : null,
+        bound_sources_count: 2,
+        scheduler_status: _args?.enabled ? 'registered' : 'disabled',
+        task_name: 'Browsory_AutoHistorySync',
+        scheduler_error: null,
+        headless_capable: true,
+        is_running: false,
+        is_portable: false,
+        last_run: null,
+        headless_notice: null,
+      };
+    case 'run_auto_sync_now':
+      return {
+        id: 1,
+        run_uuid: 'mock-run',
+        trigger_type: 'manual',
+        started_at: Date.now(),
+        finished_at: Date.now(),
+        status: 'success',
+        sources_total: 2,
+        sources_succeeded: 2,
+        sources_skipped: 0,
+        sources_failed: 0,
+        total_read: 0,
+        total_inserted: 0,
+        total_duplicate: 0,
+        duration_ms: 0,
+        error_summary: null,
+        details: [],
+      };
+    case 'list_auto_sync_runs': return [];
     default: return null;
   }
 }
@@ -73,10 +157,32 @@ const invoke = async <T>(cmd: string, args?: Record<string, unknown>): Promise<T
   if (!isTauri) {
     return handleMock(cmd, args) as unknown as T;
   }
-  return rawInvoke<T>(cmd, args);
+  try {
+    return await (sessionControlCommands.has(cmd)
+      ? rawInvoke<T>(cmd, args)
+      : sensitiveRequest(() => rawInvoke<T>(cmd, args)));
+  } catch (err: any) {
+    const errStr = typeof err === 'string' ? err : err?.message || '';
+    if (
+      errStr.includes('数据库保险库未解锁') ||
+      errStr.includes('VaultLocked') ||
+      errStr.toLowerCase().includes('vault locked')
+    ) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('browsory://vault-locked'));
+      }
+    }
+    throw err;
+  }
 };
 
 export const tauriApi = {
+  getPlaintextResidue: (): Promise<{ legacy_backup_bytes: number | null; blocked: boolean }> =>
+    invoke('get_plaintext_residue'),
+  retireLegacyPlaintextBackup: (password: string, confirmation: string): Promise<string> =>
+    invoke('retire_legacy_plaintext_backup', { password, confirmation }),
+  restoreDatabaseBackupFile: (filePath: string, password?: string, recoveryKey?: string): Promise<string> =>
+    invoke<string>('restore_database_backup_file', { filePath, password, recoveryKey }),
   scanBrowsers: async (): Promise<DiscoveredProfile[]> => {
     if (!isTauri) return mockProfiles;
     return invoke<DiscoveredProfile[]>('scan_browsers');
@@ -120,6 +226,14 @@ export const tauriApi = {
     return invoke<AppInfo>('get_app_info');
   },
 
+  checkForUpdates: async (): Promise<UpdateCheckResult> => {
+    return invoke<UpdateCheckResult>('check_for_updates');
+  },
+
+  quitApplication: async (): Promise<void> => {
+    return invoke<void>('quit_application');
+  },
+
   getSetting: async (key: string): Promise<string | null> => {
     if (!isTauri) return null;
     return invoke<string | null>('get_setting', { key });
@@ -130,9 +244,23 @@ export const tauriApi = {
     return invoke<void>('set_setting', { key, value });
   },
 
-  getAnalytics: async (days?: number, startTime?: number, endTime?: number): Promise<AnalyticsSummary> => {
+  getAnalytics: async (
+    daysOrOptions?: number | { days?: number; startTime?: number; endTime?: number; summaryOnly?: boolean },
+    startTime?: number,
+    endTime?: number,
+    summaryOnly?: boolean
+  ): Promise<AnalyticsSummary> => {
     if (!isTauri) return mockAnalytics;
-    return invoke<AnalyticsSummary>('get_analytics', { days, startTime, endTime });
+    let payload: { days?: number; startTime?: number; endTime?: number; summaryOnly?: boolean } = {};
+    if (typeof daysOrOptions === 'object' && daysOrOptions !== null) {
+      payload = daysOrOptions;
+    } else if (typeof daysOrOptions === 'number' && daysOrOptions > 3650) {
+      // If a large number (timestamp in ms) was passed as first argument, map to startTime
+      payload = { startTime: daysOrOptions, endTime: startTime, summaryOnly };
+    } else {
+      payload = { days: daysOrOptions, startTime, endTime, summaryOnly };
+    }
+    return invoke<AnalyticsSummary>('get_analytics', payload);
   },
 
   exportHistory: async (options: ExportOptions): Promise<number> => {
@@ -166,22 +294,64 @@ export const tauriApi = {
     return invoke<TestAiResult>('test_ai_connection', { payload });
   },
 
+  testEmbeddingConnection: async (payload: TestEmbeddingPayload): Promise<TestAiResult> => {
+    if (!isTauri) return { success: true, latency_ms: 95, message: '向量端点测试通过 (Mock 维度: 1536)' };
+    return invoke<TestAiResult>('test_embedding_connection', { payload });
+  },
+
   callAiCompletion: async (prompt: string, systemPrompt?: string): Promise<string> => {
     if (!isTauri) return '根据您的历史浏览足迹，您近期深入查阅了 Rust、Tauri 2 以及 SQLite 相关的架构设计与文档。';
     return invoke<string>('call_ai_completion', { payload: { prompt, system_prompt: systemPrompt } });
   },
 
   openExternalUrl: async (url: string): Promise<void> => {
+    const safeUrl = validateExternalHttpUrl(url);
     if (!isTauri) {
-      window.open(url, '_blank');
+      window.open(safeUrl, '_blank', 'noopener,noreferrer');
       return;
     }
     try {
-      await openWithSystem(url);
+      await openWithSystem(safeUrl);
     } catch (e) {
       console.error('Failed to open external url:', e);
-      window.open(url, '_blank');
+      window.open(safeUrl, '_blank', 'noopener,noreferrer');
     }
+  },
+
+  // Database Security Vault
+  regenerateVaultRecoveryKey: (password: string): Promise<string> => invoke<string>('regenerate_vault_recovery_key', { password }),
+  regeneratePassiveVaultRecoveryKey: (): Promise<string> => invoke<string>('regenerate_passive_vault_recovery_key'),
+  confirmVaultRecoveryKey: (recoveryKey: string): Promise<void> => invoke<void>('confirm_vault_recovery_key', { recoveryKey }),
+  getVaultStatus: async (): Promise<VaultStatusInfo> => {
+    return invoke<VaultStatusInfo>('get_vault_status');
+  },
+
+  createVault: async (password: string): Promise<string> => {
+    return invoke<string>('create_vault', { password });
+  },
+
+  unlockVault: async (password: string): Promise<boolean> => {
+    return invoke<boolean>('unlock_vault', { password });
+  },
+
+  resumePassiveVault: async (pin?: string): Promise<PassiveResumeResult> => {
+    return invoke<PassiveResumeResult>('resume_passive_vault', pin ? { pin } : {});
+  },
+
+  unlockVaultWithRecoveryKey: async (recoveryKey: string): Promise<boolean> => {
+    return invoke<boolean>('unlock_vault_with_recovery_key', { recoveryKey });
+  },
+
+  lockVault: async (): Promise<void> => {
+    return invoke<void>('lock_vault');
+  },
+
+  changeVaultPassword: async (oldPassword: string, newPassword: string): Promise<void> => {
+    return invoke<void>('change_vault_password', { oldPassword, newPassword });
+  },
+
+  migrateLegacyDatabase: async (password: string): Promise<string> => {
+    return invoke<string>('migrate_legacy_database', { password });
   },
 
   // Security & App Lock
@@ -244,8 +414,8 @@ export const tauriApi = {
     return invoke<void>('delete_backup', { id });
   },
 
-  restoreDatabaseBackup: async (backupId: number): Promise<string> => {
-    return invoke<string>('restore_database_backup', { backupId });
+  restoreDatabaseBackup: async (backupId: number, password?: string, recoveryKey?: string): Promise<string> => {
+    return invoke<string>('restore_database_backup', { backupId, password, recoveryKey });
   },
 
   exportDatabaseBackup: async (backupId: number, targetFilePath: string): Promise<void> => {
@@ -366,6 +536,79 @@ export const tauriApi = {
 
   getLinkHealth: async (urlId: number): Promise<LinkHealthStatus | null> => {
     return invoke<LinkHealthStatus | null>('get_link_health', { urlId });
+  },
+
+  // Milestone D: Diagnostics & Health Center
+  getDiagnosticsInfo: async (): Promise<DiagnosticsInfo> => {
+    return invoke<DiagnosticsInfo>('get_diagnostics_info');
+  },
+
+  exportDiagnosticsBundle: async (targetPath?: string): Promise<string> => {
+    return invoke<string>('export_diagnostics_bundle', { targetPath });
+  },
+
+  // Milestone E: Storage Manager
+  getStorageBreakdown: async (): Promise<StorageBreakdown> => {
+    return invoke<StorageBreakdown>('get_storage_breakdown');
+  },
+
+  cleanStorageCache: async (): Promise<StorageCleanResult> => {
+    return invoke<StorageCleanResult>('clean_storage_cache');
+  },
+
+  // Milestone G: Offline Page Archives & Background Jobs
+  saveOfflineArchive: async (payload: SaveArchivePayload): Promise<PageArchiveSummary> => {
+    return invoke<PageArchiveSummary>('save_offline_archive', { payload });
+  },
+
+  getOfflineArchive: async (urlId: number): Promise<PageArchiveDetail | null> => {
+    return invoke<PageArchiveDetail | null>('get_offline_archive', { urlId });
+  },
+
+  listOfflineArchives: async (limit?: number, offset?: number): Promise<PageArchiveSummary[]> => {
+    return invoke<PageArchiveSummary[]>('list_offline_archives', { limit, offset });
+  },
+
+  deleteOfflineArchive: async (pageUuid: string): Promise<void> => {
+    return invoke<void>('delete_offline_archive', { pageUuid });
+  },
+
+  listBackgroundJobs: async (limit?: number): Promise<BackgroundJob[]> => {
+    return invoke<BackgroundJob[]>('list_background_jobs', { limit });
+  },
+
+  cancelBackgroundJob: async (jobId: string): Promise<void> => {
+    return invoke<void>('cancel_background_job', { jobId });
+  },
+
+  // Milestone H: E2EE Multi-Device Sync
+  testWebDavSync: async (config: WebDavConfig): Promise<void> => {
+    return invoke<void>('test_webdav_sync', { config });
+  },
+
+  executeWebDavSync: async (config: WebDavConfig): Promise<SyncStatusReport> => {
+    return invoke<SyncStatusReport>('execute_webdav_sync', { config });
+  },
+
+  // Auto History Sync (Scheduled Incremental)
+  getAutoSyncStatus: async (): Promise<AutoSyncStatus> => {
+    return invoke<AutoSyncStatus>('get_auto_sync_status');
+  },
+
+  updateAutoSyncConfig: async (enabled: boolean, intervalDays: number): Promise<AutoSyncStatus> => {
+    return invoke<AutoSyncStatus>('update_auto_sync_config', { enabled, intervalDays });
+  },
+
+  runAutoSyncNow: async (): Promise<AutoSyncRunItem> => {
+    return invoke<AutoSyncRunItem>('run_auto_sync_now');
+  },
+
+  repairAutoSyncTask: async (): Promise<AutoSyncStatus> => {
+    return invoke<AutoSyncStatus>('repair_auto_sync_task');
+  },
+
+  listAutoSyncRuns: async (limit?: number): Promise<AutoSyncRunItem[]> => {
+    return invoke<AutoSyncRunItem[]>('list_auto_sync_runs', { limit });
   },
 };
 
